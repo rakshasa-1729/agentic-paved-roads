@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { z } from "zod";
@@ -149,7 +150,7 @@ const LEGACY_KEY_TO_COLLECTION_NAME: Record<string, string> = {
   paved_roads: "paved_road_tool",
 };
 
-function translateLegacyShape(raw: unknown): unknown {
+export function translateLegacyShape(raw: unknown): unknown {
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return raw;
   const root = raw as Record<string, unknown>;
   const out: Record<string, unknown> = { ...root };

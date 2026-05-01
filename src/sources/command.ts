@@ -120,7 +120,7 @@ export class InlineToolSource implements ToolSource {
   }
 }
 
-function renderTemplate(tmpl: string, input: unknown): string {
+export function renderTemplate(tmpl: string, input: unknown): string {
   if (typeof input !== "object" || input == null) return tmpl;
   return tmpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key: string) => {
     const v = key.split(".").reduce<unknown>((acc, k) => (acc == null ? acc : (acc as Record<string, unknown>)[k]), input);
@@ -128,7 +128,7 @@ function renderTemplate(tmpl: string, input: unknown): string {
   });
 }
 
-function renderObject(obj: unknown, input: unknown): unknown {
+export function renderObject(obj: unknown, input: unknown): unknown {
   if (typeof obj === "string") return renderTemplate(obj, input);
   if (Array.isArray(obj)) return obj.map((v) => renderObject(v, input));
   if (obj && typeof obj === "object") {
