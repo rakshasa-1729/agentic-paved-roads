@@ -46,18 +46,16 @@ npm run inspector
 
 ## Docker
 
-The server can run as a stdio container — useful when you don't want
-to install Node on every developer's laptop. The image bundles
-`conftest`, so `tool_registry(invoke, name=conftest, …)` works out of
-the box.
+The image bundles `conftest`, so `tool_registry(invoke, name=conftest, …)`
+works out of the box, and ships with a default config at
+`/etc/security-mcp/config.yaml` that reads content from a private
+GitHub repo over the API — no volume mounts needed.
 
 ```bash
 docker build -t security-mcp:latest .
 ```
 
-The image's default config (`/etc/security-mcp/config.yaml`) reads
-content from a private GitHub repo over the API — no volume mounts
-needed. Pass the GitHub token in via env:
+**Stdio** (default) — what the per-dev `bin/security-mcp` launcher uses:
 
 ```bash
 docker run -i --rm \
@@ -66,10 +64,20 @@ docker run -i --rm \
 ```
 
 `-i` keeps stdin attached (MCP framing rides on it). `-e VAR` (with no
-value) passes the value through from your shell env. No ports are
-exposed — the container speaks stdio, not HTTP.
+value) passes the value through from your shell env.
 
-For shared / production deployment (Cloud Run, AWS Lambda) see
+**HTTP** — for shared deploys behind a reverse proxy:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e MCP_TRANSPORT=http \
+  -e SECURITY_REPO_TOKEN \
+  security-mcp:latest
+# → POST http://localhost:8080/mcp   (Streamable HTTP)
+# → GET  http://localhost:8080/healthz
+```
+
+For Cloud Run / AWS Lambda recipes, auth, and the route shape, see
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ### bin/security-mcp launcher

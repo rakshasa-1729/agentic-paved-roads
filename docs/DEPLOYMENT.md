@@ -11,12 +11,11 @@ This guide covers shared remote deploy on **Cloud Run** and **AWS
 Lambda**. Both targets share the same architecture; the differences are
 where auth lives and how DNS / TLS terminates.
 
-> ⚠ **Prerequisite — SSE transport.** The current image speaks stdio
-> only. Cloud Run, Lambda, and any other HTTP-fronted target need the
-> server to expose JSON-RPC over HTTP+SSE.
-> [Section 5 below](#5-sse-transport-the-prerequisite) sketches the
-> ~80-line change needed in `src/index.ts`. Until that lands, the
-> guidance below is concrete-but-not-yet-runnable.
+The image speaks two transports — **stdio** (default, used by the
+per-dev `bin/security-mcp` launcher) and **streamable HTTP** on `:8080`
+(opt-in via `MCP_TRANSPORT=http`). HTTP mode is what Cloud Run /
+Lambda / any other reverse-proxied target front. See
+[§5 Transports](#5-transports) for the route shape.
 
 ---
 
@@ -32,7 +31,7 @@ where auth lives and how DNS / TLS terminates.
                                                               ▼
                                           ┌──────────────────────────────┐
                                           │ security-mcp container       │
-                                          │   - HTTP+SSE on :8080        │
+                                          │   - Streamable HTTP on :8080 │
                                           │   - reads ${SECURITY_REPO_   │
                                           │       TOKEN} from secret     │
                                           │   - serves policies / risk / │
@@ -76,9 +75,10 @@ own auth rotation.
 
 1. **Artifact Registry** repo for the image.
 2. **Cloud Run service** in `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`
-   mode. Container exposes `:8080` (SSE) and reads
-   `SECURITY_REPO_TOKEN` from a Secret Manager secret bound to the
-   runtime service account via `roles/secretmanager.secretAccessor`.
+   mode. Set `MCP_TRANSPORT=http` so the container binds `:8080`
+   (Streamable HTTP). Reads `SECURITY_REPO_TOKEN` from a Secret
+   Manager secret bound to the runtime service account via
+   `roles/secretmanager.secretAccessor`.
 3. **Identity-Aware Proxy** brand + OAuth client + access binding for
    your engineering Google Group.
 4. **External HTTPS load balancer**: global IP, managed SSL cert,
@@ -96,7 +96,7 @@ IP, so DNS goes in early.
 {
   "mcpServers": {
     "security": {
-      "url": "https://security-mcp.example.com/sse",
+      "url": "https://security-mcp.example.com/mcp",
       "headers": {
         // gcloud auth print-identity-token --audiences=https://security-mcp.example.com
         "Authorization": "Bearer ${env:GCP_ID_TOKEN}"
@@ -128,16 +128,16 @@ log; it does not verify a JWT itself.
 ## 3. AWS Lambda
 
 For orgs already on AWS or that don't want to manage Cloud Run.
-Lambda's response streaming (added Apr 2023) supports SSE up to a
-6 MB / 15 min cap per response — fine for typical MCP sessions but
-long-lived connections will reconnect.
+Lambda's response streaming (added Apr 2023) carries the Streamable
+HTTP responses up to a 6 MB / 15 min cap per response — fine for
+typical MCP sessions but long-lived connections will reconnect.
 
 ### Prerequisites
 
 - An AWS account.
 - ECR repo for the security-mcp image, wrapped with the
   [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter)
-  so the existing HTTP+SSE server runs unmodified on Lambda.
+  so the existing HTTP server runs unmodified on Lambda.
 - AWS Secrets Manager secret holding the GitHub PAT for your security
   repo, accessible to the function role.
 
@@ -152,7 +152,7 @@ long-lived connections will reconnect.
    ENV PORT=8080
    ENV READINESS_CHECK_PATH=/healthz
    ENV AWS_LWA_INVOKE_MODE=response_stream
-   ENV MCP_TRANSPORT=sse
+   ENV MCP_TRANSPORT=http
    ```
 2. **Function URL** with `AuthType: AWS_IAM` and
    `InvokeMode: RESPONSE_STREAM`.
@@ -165,7 +165,7 @@ long-lived connections will reconnect.
 {
   "mcpServers": {
     "security": {
-      "url": "https://<id>.lambda-url.<region>.on.aws/sse",
+      "url": "https://<id>.lambda-url.<region>.on.aws/mcp",
       "headers": {
         "Authorization": "AWS4-HMAC-SHA256 ..."
       }
@@ -186,9 +186,9 @@ long-lived connections will reconnect.
 - **Cold start** ~1-2s for the security-mcp container. Set
   `ProvisionedConcurrentExecutions` to keep N hot if every-call latency
   matters.
-- **15-min timeout** on Function URLs. Long-lived MCP sessions
-  reconnect; the SDK's SSE client handles reconnection if the client
-  speaks `Last-Event-Id` correctly.
+- **15-min timeout** on Function URLs. The container runs in stateless
+  HTTP mode (one server per request), so reconnects are transparent to
+  the client — no session resume needed.
 - **6 MB response cap** on streamed responses. Repos with thousands of
   files may need pagination; today the MCP returns the full list in
   one response.
@@ -205,72 +205,65 @@ long-lived connections will reconnect.
 | OIDC bearer (any provider)         | ✅        | ✅     | Bring your own IdP. Requires server-side auth code — **not yet shipped.** |
 | None (dev only)                    | ⚠         | ⚠      | Don't put this in front of anyone real. |
 
-The current container does NOT verify OIDC bearer tokens. Adding a
-small middleware (~100 lines, `jose` / `jsonwebtoken`) is straightforward
-once SSE transport lands; until then, rely on IAP / IAM as the auth
-boundary.
+The current container does NOT verify OIDC bearer tokens itself. Add
+a small middleware (~100 lines, `jose` / `jsonwebtoken`) in front of
+`/mcp` if you need to bring your own IdP; until then, rely on IAP / IAM
+as the auth boundary.
 
 ---
 
-## 5. SSE transport (the prerequisite)
+## 5. Transports
 
-### Why it's needed
+The server speaks two transports out of the box. Pick one with the
+`MCP_TRANSPORT` env var:
 
-MCP clients speak the protocol over either:
-- **stdio** — process-per-session. The current container does this.
-  Inherently local.
-- **HTTP+SSE** — JSON-RPC requests on `POST /messages`, responses +
-  notifications streamed on `GET /sse`. Required for any HTTP-fronted
-  target.
+| Transport      | When                              | How |
+|----------------|-----------------------------------|-----|
+| `stdio` (default) | Per-dev local — launched by the MCP client over stdin/stdout. | `docker run -i --rm security-mcp:latest` |
+| `http`         | Shared deploys behind a reverse proxy (Cloud Run, Lambda, Kubernetes, …). | `MCP_TRANSPORT=http PORT=8080 docker run ...` |
 
-The MCP TypeScript SDK ships
-[`SSEServerTransport`](https://github.com/modelcontextprotocol/typescript-sdk/tree/main/src/server)
-already; switching the bootstrap is the only code change.
+`http` mode implements [Streamable HTTP][streamable-http] — the
+current MCP transport that supersedes the older HTTP+SSE pairing. One
+endpoint, one verb pattern:
 
-### Sketch
-
-In `src/index.ts`, replace the unconditional `StdioServerTransport`
-with an env-driven switch:
-
-```ts
-const transport = process.env.MCP_TRANSPORT === "sse"
-  ? sseTransport()
-  : new StdioServerTransport();
-
-function sseTransport() {
-  const app = express();
-  const sessions = new Map<string, SSEServerTransport>();
-
-  app.get("/sse", async (req, res) => {
-    const t = new SSEServerTransport("/messages", res);
-    sessions.set(t.sessionId, t);
-    res.on("close", () => sessions.delete(t.sessionId));
-    await server.connect(t);
-  });
-
-  app.post("/messages", express.json(), async (req, res) => {
-    const sid = req.query.sessionId as string;
-    const t = sessions.get(sid);
-    if (!t) { res.status(404).end(); return; }
-    await t.handlePostMessage(req, res);
-  });
-
-  app.listen(Number(process.env.PORT ?? 8080));
-  return null; // server.connect() called per-session above
-}
+```
+POST   /mcp        — JSON-RPC requests; response is either application/json
+                     or text/event-stream depending on what the client
+                     accepts. The server picks SSE when streaming is useful.
+GET    /mcp        — 405 (stateless mode rejects server-initiated streams)
+DELETE /mcp        — 405
+GET    /healthz    — liveness probe; returns {"status":"ok"} as JSON
 ```
 
-Wire `Dockerfile`'s `CMD` to honor `MCP_TRANSPORT=sse` and `EXPOSE 8080`.
-That's the whole change — ~80 lines including types and error handling.
+The container runs in **stateless** mode: each `POST /mcp` builds a
+fresh `Server` + transport, handles the request, and tears them down
+on response close. No session affinity — load-balance freely. The
+trade-off is no server-pushed notifications across the connection,
+which the shipped tools don't use.
 
-### Status
+DNS-rebinding protection is on by default via the SDK's
+`createMcpExpressApp` helper. Override the allowlist with
+`ALLOWED_HOSTS=host1,host2,…` if you front the container with a domain
+the SDK doesn't infer.
 
-- [ ] SSE transport in `src/index.ts`
-- [ ] `MCP_TRANSPORT` env switch
-- [ ] `EXPOSE 8080` in Dockerfile (currently no port — stdio only)
-- [ ] Tests for the HTTP path
+### Quick check
 
-When this is done, Cloud Run / Lambda deploys work end-to-end.
+```bash
+docker run --rm -p 8080:8080 -e MCP_TRANSPORT=http security-mcp:latest &
+curl -s localhost:8080/healthz
+# → {"status":"ok","transport":"http"}
+
+curl -sN -X POST localhost:8080/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize",
+       "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                 "clientInfo":{"name":"curl","version":"0"}}}'
+# → event: message
+#   data: {"result":{"protocolVersion":"…","serverInfo":{…}}, …}
+```
+
+[streamable-http]: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
 
 ---
 
@@ -279,7 +272,7 @@ When this is done, Cloud Run / Lambda deploys work end-to-end.
 - **Cost** (rough): Cloud Run min-instance=0 idles to zero — only pay
   for active sessions. Lambda pricing is similar; the bigger
   consideration is that Lambda reconnects every 15 min for long-lived
-  SSE connections.
+  streaming responses.
 - **Audit log**: structured JSON to stderr → Cloud Logging /
   CloudWatch natively. No special config needed; both platforms tail
   stdio.

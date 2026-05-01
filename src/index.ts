@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { LoadedCollection } from "./config.js";
+import type { LoadedCollection, LoadedConfig } from "./config.js";
 import { loadConfig } from "./config.js";
 import { materializePolicies } from "./policies-cache.js";
 import { handleContent, contentJsonSchema, ContentInputSchema } from "./tools/content.js";
@@ -33,22 +35,12 @@ function findPolicyCollection(collections: LoadedCollection[]): LoadedCollection
   return undefined;
 }
 
-async function main(): Promise<void> {
-  const cfg = await loadConfig(CONFIG_PATH);
-
-  const policiesCacheDir = process.env.POLICIES_CACHE_DIR!;
-  let materialized = 0;
-  const policyCollection = findPolicyCollection(cfg.collections);
-  if (policyCollection) {
-    try {
-      materialized = await materializePolicies(policyCollection.sources, policiesCacheDir);
-    } catch (err) {
-      process.stderr.write(
-        `security-mcp: materializePolicies failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    }
-  }
-
+/**
+ * Build a fully-wired MCP Server from a loaded config. Cheap — just
+ * constructor + handler registration. Safe to call once per stdio
+ * process or per-request in stateless HTTP mode.
+ */
+function buildServer(cfg: LoadedConfig): Server {
   const server = new Server(
     { name: cfg.server.name, version: cfg.server.version },
     { capabilities: { tools: {} }, instructions: cfg.server.instructions },
@@ -97,19 +89,114 @@ async function main(): Promise<void> {
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return server;
+}
 
+function startupBanner(cfg: LoadedConfig, materialized: number, policiesCacheDir: string, transportLabel: string): string {
   const collectionSummary = cfg.collections.length === 0
     ? "collections=0"
     : `collections=${cfg.collections.length}[${cfg.collections.map((c) => `${c.name}:${c.sources.length}`).join(",")}]`;
-
-  process.stderr.write(
-    `security-mcp started (config=${CONFIG_PATH}, org=${cfg.server.organization ?? "n/a"}, ` +
-      `${collectionSummary}, ` +
-      `tools=registry+${cfg.tools.mcpSources.length} mcp, ` +
-      `policies_cached=${materialized}@${policiesCacheDir})\n`,
+  return (
+    `security-mcp started (transport=${transportLabel}, config=${CONFIG_PATH}, ` +
+    `org=${cfg.server.organization ?? "n/a"}, ${collectionSummary}, ` +
+    `tools=registry+${cfg.tools.mcpSources.length} mcp, ` +
+    `policies_cached=${materialized}@${policiesCacheDir})\n`
   );
+}
+
+async function serveStdio(cfg: LoadedConfig, materialized: number, policiesCacheDir: string): Promise<void> {
+  const server = buildServer(cfg);
+  await server.connect(new StdioServerTransport());
+  process.stderr.write(startupBanner(cfg, materialized, policiesCacheDir, "stdio"));
+}
+
+async function serveHttp(cfg: LoadedConfig, materialized: number, policiesCacheDir: string): Promise<void> {
+  const port = Number(process.env.PORT ?? 8080);
+  const host = process.env.HOST ?? "0.0.0.0";
+
+  // Stateless: each POST /mcp gets its own Server + transport. Server
+  // construction is cheap; the heavy lift (loadConfig + policies cache)
+  // happened once at process start. The trade-off is no server-pushed
+  // notifications across the connection, which we don't use anyway.
+  const app = createMcpExpressApp({
+    host,
+    allowedHosts: process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean),
+  });
+
+  app.get("/healthz", (_req, res) => {
+    res.status(200).json({ status: "ok", transport: "http" });
+  });
+
+  app.post("/mcp", async (req, res) => {
+    const server = buildServer(cfg);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+      res.on("close", () => {
+        transport.close().catch(() => undefined);
+        server.close().catch(() => undefined);
+      });
+    } catch (err) {
+      process.stderr.write(`security-mcp: /mcp error: ${err instanceof Error ? err.message : String(err)}\n`);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
+  });
+
+  // Stateless mode rejects GET / DELETE per the MCP spec.
+  app.get("/mcp", (_req, res) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed (stateless transport)" },
+      id: null,
+    });
+  });
+  app.delete("/mcp", (_req, res) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed (stateless transport)" },
+      id: null,
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    app.listen(port, host, () => {
+      process.stderr.write(startupBanner(cfg, materialized, policiesCacheDir, `http :${port}`));
+      resolve();
+    });
+  });
+}
+
+async function main(): Promise<void> {
+  const cfg = await loadConfig(CONFIG_PATH);
+
+  const policiesCacheDir = process.env.POLICIES_CACHE_DIR!;
+  let materialized = 0;
+  const policyCollection = findPolicyCollection(cfg.collections);
+  if (policyCollection) {
+    try {
+      materialized = await materializePolicies(policyCollection.sources, policiesCacheDir);
+    } catch (err) {
+      process.stderr.write(
+        `security-mcp: materializePolicies failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  const transport = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
+  if (transport === "http" || transport === "streamable-http") {
+    await serveHttp(cfg, materialized, policiesCacheDir);
+  } else if (transport === "stdio") {
+    await serveStdio(cfg, materialized, policiesCacheDir);
+  } else {
+    throw new Error(`unsupported MCP_TRANSPORT="${transport}" (expected stdio or http)`);
+  }
 }
 
 main().catch((err) => {

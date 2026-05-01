@@ -1,13 +1,16 @@
 # syntax=docker/dockerfile:1.7
 #
-# Generic security MCP server, packaged as a stdio container.
+# Generic security MCP server. Speaks two transports:
 #
-# Designed to be launched by an MCP client like:
-#   docker run -i --rm \
-#     -v /path/to/acme-security-repo:/data/security:ro \
-#     security-mcp:latest
+#   stdio (default) — launched by an MCP client over stdin/stdout:
+#     docker run -i --rm \
+#       -v /path/to/security-repo:/data/security:ro \
+#       security-mcp:latest
 #
-# stdin/stdout carry the MCP JSON-RPC framing. No ports exposed.
+#   http (opt-in)   — Streamable HTTP on :8080 for shared deploys:
+#     docker run --rm -p 8080:8080 \
+#       -e MCP_TRANSPORT=http \
+#       security-mcp:latest
 
 FROM node:20-slim AS deps
 WORKDIR /build
@@ -64,5 +67,8 @@ RUN groupadd -g 10001 mcp \
  && useradd -u 10001 -g mcp -s /usr/sbin/nologin -M mcp
 USER 10001:10001
 
-# stdio MCP — no EXPOSE, no HEALTHCHECK, no entrypoint shell.
+# Documented for the http transport; harmless when running stdio
+# (the server doesn't bind a port unless MCP_TRANSPORT=http).
+EXPOSE 8080
+
 CMD ["node", "dist/index.js"]
