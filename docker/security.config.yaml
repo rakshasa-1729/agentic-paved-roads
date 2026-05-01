@@ -1,0 +1,164 @@
+# Baked-in container default. Lives at /etc/security-mcp/config.yaml inside
+# the image. New collections-based shape (Move 0).
+#
+# All content pulls live from acme-security-repo on GitHub — no local clone,
+# no volume mounts. Tool descriptors are inlined so the container is fully
+# self-contained.
+#
+# Required env var (passed via `docker run -e SECURITY_REPO_TOKEN ...`):
+#
+#   SECURITY_REPO_TOKEN — token with Contents: read on the security repo.
+
+server:
+  name: security-mcp
+  organization: acme
+  instructions: |
+    You are working inside Acme. The platform team owns IAP-fronted Cloud Run
+    as the only paved road for internal apps. Before generating, modifying, or
+    reviewing infrastructure code:
+      1. policy_tool(action=list) — read every applicable .md policy.
+      2. risk_index(action=list, query=<feature>) — read the risk context.
+      3. paved_road_tool(action=list) — prefer modules from acme-security-repo
+         over hand-rolled resources.
+      4. tool_registry(action=invoke, name=conftest, …) — validate every
+         terraform plan against the policies before opening a PR.
+      5. If a denial is not auto-fixable, file an exception via
+         tool_registry(action=invoke, name=exception_tool, …).
+
+collections:
+  - name: policy_tool
+    description: Acme security policies. Markdown is the human spec; .rego is enforced by conftest.
+    usage: |
+      MANDATORY before opening any PR that changes infrastructure:
+
+        1. After reading the policies returned here, write/update your
+           terraform code.
+        2. Generate a plan JSON:
+              terraform -chdir=<infra-dir> plan -out=plan.bin
+              terraform -chdir=<infra-dir> show -json plan.bin > <infra-dir>/plan.json
+        3. Run conftest. PRIMARY PATH — via the security MCP:
+              tool_registry(action="invoke", name="conftest",
+                            input={ "input_path": "<infra-dir>/plan.json" })
+           FALLBACK — if the MCP path fails (docker daemon down, image
+           not built, container errored, etc.), install conftest locally
+           and run it directly against the .rego policies:
+              # macOS
+              brew install conftest
+              # Linux (or any host without brew)
+              curl -fsSL "https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_$(uname -s)_$(uname -m | sed 's/aarch64/arm64/;s/amd64/x86_64/').tar.gz" \
+                | sudo tar -xz -C /usr/local/bin conftest
+              # Then run, with policies sourced from a sibling clone of
+              # the security repo (preferred) or a tmp dir populated via
+              # paved_road_tool(action="get", …) for each .rego file:
+              conftest test \
+                --policy <path-to-acme-security-repo>/policies \
+                --all-namespaces \
+                <infra-dir>/plan.json
+           Either path produces the same denials. Do not skip the check.
+        4. Fix every `FAIL` line conftest reports. For denials that cannot
+           be auto-fixed, file an exception via tool_registry(invoke,
+           name="exception_tool", …) — do not ignore them.
+
+      Reading the policies is necessary but not sufficient. A PR that
+      touches infrastructure without a successful conftest run is not
+      reviewable.
+    sources:
+      - type: github
+        name: acme-policies
+        owner: rakshasa-1729
+        repo: acme-security-repo
+        ref: main
+        path: policies
+        patterns: ["**/*.md", "**/*.rego"]
+        token: "${SECURITY_REPO_TOKEN}"
+
+  - name: risk_index
+    description: Acme risk context.
+    sources:
+      - type: github
+        name: acme-risk
+        owner: rakshasa-1729
+        repo: acme-security-repo
+        ref: main
+        path: risk
+        patterns: ["**/*.md"]
+        token: "${SECURITY_REPO_TOKEN}"
+
+  - name: paved_road_tool
+    description: Acme paved roads — patterns + module building blocks.
+    sources:
+      - type: github
+        name: acme-paved-roads
+        owner: rakshasa-1729
+        repo: acme-security-repo
+        ref: main
+        path: paved-roads
+        patterns: ["**/*.md", "**/main.tf", "**/variables.tf", "**/outputs.tf"]
+        token: "${SECURITY_REPO_TOKEN}"
+
+tools:
+  description: Security tools the agent can invoke.
+  registry:
+    - type: command
+      name: conftest
+      description: |
+        Run OPA/Rego policy checks against a Terraform plan JSON. The MCP
+        server pre-fetches all `.rego` files from the `policy_tool`
+        collection at startup and writes them to ${POLICIES_CACHE_DIR};
+        conftest reads from that path.
+      command: conftest
+      args:
+        - test
+        - "--policy"
+        - "${POLICIES_CACHE_DIR}"
+        - "--all-namespaces"
+        - "{{input_path}}"
+      input_schema:
+        type: object
+        properties:
+          input_path:
+            type: string
+            description: Path to a `terraform show -json plan.bin` output file. Mount the directory at runtime via `-v <host>:<container>` and pass the in-container path here.
+        required: [input_path]
+        additionalProperties: false
+
+    - type: http
+      name: exception_tool
+      description: |
+        File a security exception when a policy denial cannot be auto-remediated.
+      method: POST
+      url: "${EXCEPTION_API_BASE_URL}/v1/exceptions"
+      headers:
+        Authorization: "Bearer ${EXCEPTION_API_TOKEN}"
+      body_template:
+        repo: "{{repo}}"
+        rule: "{{rule}}"
+        resource: "{{resource}}"
+        justification: "{{justification}}"
+        duration_hours: "{{duration_hours}}"
+        data_class: "{{data_class}}"
+        env: "{{env}}"
+        audience: "{{audience}}"
+        compensating_controls: "{{compensating_controls}}"
+      input_schema:
+        type: object
+        properties:
+          repo: { type: string }
+          rule: { type: string }
+          resource: { type: string }
+          justification: { type: string }
+          duration_hours: { type: number }
+          data_class:
+            type: string
+            enum: [public, internal, confidential, restricted]
+          env:
+            type: string
+            enum: [prod, staging, dev, sandbox]
+          audience:
+            type: string
+            enum: [public, internal, "internal-vpc"]
+          compensating_controls:
+            type: array
+            items: { type: string }
+        required: [repo, rule, resource, justification, data_class, env]
+        additionalProperties: false

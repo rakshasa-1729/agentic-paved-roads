@@ -1,0 +1,107 @@
+# Security MCP — example config.
+# Copy to security.config.yaml and edit. Each category accepts an array of sources;
+# items returned by each source are merged and tagged with the source id.
+#
+# Source types:
+#   file  — glob a local directory for matching files
+#   http  — REST endpoint that returns a list and per-item content
+#   mcp   — proxy to another MCP server (resources for content, tools for tool_registry)
+#
+# Use ${ENV_VAR} anywhere a string is expected to interpolate from the environment.
+
+server:
+  name: security-mcp
+  organization: acme
+  instructions: |
+    You are working inside Acme. Before generating or modifying infrastructure,
+    risk-bearing config, or anything that touches data classified at L2+:
+      1. Call policy_tool(action=list) and read the policies that match your task.
+      2. Call risk_index(action=list, query=<repo-or-component>) for context.
+      3. Prefer paved_road_tool(action=list) over hand-rolled implementations.
+      4. Validate with tool_registry(action=invoke, name=conftest, ...) before opening a PR.
+
+policies:
+  description: Acme security policies. Markdown is the human-readable spec; .rego is enforced via conftest.
+  sources:
+    - type: file
+      name: local-policies
+      path: ./examples/policies
+      patterns: ["**/*.md", "**/*.rego"]
+    # - type: http
+    #   name: central-policy-api
+    #   base_url: https://policies.acme.internal/v1
+    #   list_path: /policies
+    #   get_path: /policies/{name}
+    #   headers:
+    #     Authorization: "Bearer ${POLICY_API_TOKEN}"
+    # - type: mcp
+    #   name: policy-mcp
+    #   command: npx
+    #   args: ["-y", "@acme/policy-mcp"]
+
+risk:
+  description: Risk context — what risks actually matter for this org / repo / environment.
+  sources:
+    - type: file
+      name: local-risk
+      path: ./examples/risk
+      patterns: ["**/*.md"]
+
+paved_roads:
+  description: Paved roads — approved templates, modules, and reference architectures.
+  sources:
+    - type: file
+      name: local-paved-roads
+      path: ./examples/paved-roads
+      patterns: ["**/*.md", "**/*.yaml"]
+    # - type: http
+    #   name: terraform-modules
+    #   base_url: https://api.github.com/repos/acme/terraform-modules/contents
+    #   list_path: /modules
+    #   get_path: /modules/{name}/README.md
+    #   headers:
+    #     Authorization: "Bearer ${GITHUB_TOKEN}"
+    #     Accept: "application/vnd.github.raw"
+
+tools:
+  description: Security tools the agent can invoke directly.
+  registry:
+    - type: command
+      name: conftest
+      description: Run OPA/Rego policy checks against a JSON or YAML input file.
+      command: conftest
+      args: ["test", "--policy", "{{policy_path}}", "{{input_path}}"]
+      input_schema:
+        type: object
+        properties:
+          policy_path: { type: string, description: "directory containing .rego policies" }
+          input_path: { type: string, description: "file to test (terraform plan json, k8s manifest, …)" }
+        required: [policy_path, input_path]
+
+    - type: http
+      name: exception_tool
+      description: Request a security exception. Returns ticket id + risk score.
+      method: POST
+      url: https://exceptions.acme.internal/v1/exceptions
+      headers:
+        Authorization: "Bearer ${EXCEPTION_API_TOKEN}"
+      body_template:
+        repo: "{{repo}}"
+        rule: "{{rule}}"
+        justification: "{{justification}}"
+        duration_hours: "{{duration_hours}}"
+      input_schema:
+        type: object
+        properties:
+          repo: { type: string }
+          rule: { type: string }
+          justification: { type: string }
+          duration_hours: { type: number }
+        required: [repo, rule, justification]
+
+  # Additional tools can come from other MCP servers:
+  # sources:
+  #   - type: mcp
+  #     name: kubectl-mcp
+  #     command: npx
+  #     args: ["-y", "@acme/kubectl-mcp"]

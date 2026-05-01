@@ -1,0 +1,171 @@
+# Local config for the demo. New collections-based shape (Move 0).
+#
+# All four content categories pull live from acme-security-repo on
+# GitHub via the `github` source — no local clone required. The Git Trees
+# API gives us a single recursive listing per category; individual files
+# are fetched via the Contents API with `Accept: application/vnd.github.raw`
+# only when the agent calls `<collection>(action=get, …)`.
+#
+# Auth: ${SECURITY_REPO_TOKEN} must be set in the env that launches this
+# server. For Cursor: pass via the mcpServers[…].env block (or the
+# bin/security-mcp launcher, which fetches via `gh auth token`).
+
+server:
+  name: security-mcp
+  organization: acme
+  instructions: |
+    You are working inside Acme. The platform team owns IAP-fronted Cloud Run
+    as the only paved road for internal apps. Before generating, modifying, or
+    reviewing infrastructure code:
+      1. policy_tool(action=list) — read every applicable .md policy.
+      2. risk_index(action=list, query=<feature>) — read the risk context.
+      3. paved_road_tool(action=list) — prefer modules from acme-security-repo
+         over hand-rolled resources. The cloud-run-iap module exists so you do
+         not have to think about ingress, IAP, or labels.
+      4. tool_registry(action=invoke, name=conftest, …) — validate every
+         terraform plan against acme-security-repo/policies before opening a PR.
+      5. If a denial is not auto-fixable, file an exception via
+         tool_registry(action=invoke, name=exception_tool, …) with a real
+         justification, the data class, and any compensating controls.
+
+collections:
+  - name: policy_tool
+    description: Acme security policies. Each .md is the human-readable spec; the sibling .rego is enforced by conftest.
+    usage: |
+      MANDATORY before opening any PR that changes infrastructure:
+
+        1. After reading the policies returned here, write/update your
+           terraform code.
+        2. Generate a plan JSON:
+              terraform -chdir=<infra-dir> plan -out=plan.bin
+              terraform -chdir=<infra-dir> show -json plan.bin > <infra-dir>/plan.json
+        3. Run conftest. PRIMARY PATH — via the security MCP:
+              tool_registry(action="invoke", name="conftest",
+                            input={ "input_path": "<infra-dir>/plan.json" })
+           FALLBACK — if the MCP path fails (docker daemon down, image
+           not built, container errored, etc.), install conftest locally
+           and run it directly against the .rego policies:
+              # macOS
+              brew install conftest
+              # Linux (or any host without brew)
+              curl -fsSL "https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_$(uname -s)_$(uname -m | sed 's/aarch64/arm64/;s/amd64/x86_64/').tar.gz" \
+                | sudo tar -xz -C /usr/local/bin conftest
+              # Then run, with policies sourced from a sibling clone of
+              # the security repo (preferred) or a tmp dir populated via
+              # paved_road_tool(action="get", …) for each .rego file:
+              conftest test \
+                --policy <path-to-acme-security-repo>/policies \
+                --all-namespaces \
+                <infra-dir>/plan.json
+           Either path produces the same denials. Do not skip the check.
+        4. Fix every `FAIL` line conftest reports. For denials that cannot
+           be auto-fixed, file an exception via tool_registry(invoke,
+           name="exception_tool", …) — do not ignore them.
+
+      Reading the policies is necessary but not sufficient. A PR that
+      touches infrastructure without a successful conftest run is not
+      reviewable.
+    sources:
+      - type: github
+        name: acme-policies
+        owner: rakshasa-1729
+        repo: acme-security-repo
+        ref: main
+        path: policies
+        patterns: ["**/*.md", "**/*.rego"]
+        token: "${SECURITY_REPO_TOKEN}"
+
+  - name: risk_index
+    description: Acme risk context — what risks actually matter for Acme's GCP footprint.
+    sources:
+      - type: github
+        name: acme-risk
+        owner: rakshasa-1729
+        repo: acme-security-repo
+        ref: main
+        path: risk
+        patterns: ["**/*.md"]
+        token: "${SECURITY_REPO_TOKEN}"
+
+  - name: paved_road_tool
+    description: Acme paved roads — opinionated patterns + the Terraform module building blocks they compose. Prefer a pattern when one fits.
+    sources:
+      - type: github
+        name: acme-paved-roads
+        owner: rakshasa-1729
+        repo: acme-security-repo
+        ref: main
+        path: paved-roads
+        patterns: ["**/*.md", "**/main.tf", "**/variables.tf", "**/outputs.tf"]
+        token: "${SECURITY_REPO_TOKEN}"
+
+tools:
+  description: Security tools the agent can invoke (validate + request exceptions).
+  # Tool descriptors are inlined here rather than fetched from the security
+  # repo — they describe how *this* MCP calls the tools and naturally live
+  # with the consumer.
+  registry:
+    - type: command
+      name: conftest
+      description: |
+        Run OPA/Rego policy checks against a Terraform plan JSON. Returns the
+        list of policy denials. The MCP server pre-fetches all `.rego` files
+        from the `policy_tool` collection at startup and writes them to
+        ${POLICIES_CACHE_DIR}; conftest reads from that path. The agent only
+        needs to pass `input_path` (the plan.json on disk).
+      command: conftest
+      args:
+        - test
+        - "--policy"
+        - "${POLICIES_CACHE_DIR}"
+        - "--all-namespaces"
+        - "{{input_path}}"
+      input_schema:
+        type: object
+        properties:
+          input_path:
+            type: string
+            description: Path to a `terraform show -json plan.bin` output file.
+        required: [input_path]
+        additionalProperties: false
+
+    - type: http
+      name: exception_tool
+      description: |
+        File a security exception when a policy denial cannot be auto-remediated.
+      method: POST
+      url: "${EXCEPTION_API_BASE_URL}/v1/exceptions"
+      headers:
+        Authorization: "Bearer ${EXCEPTION_API_TOKEN}"
+      body_template:
+        repo: "{{repo}}"
+        rule: "{{rule}}"
+        resource: "{{resource}}"
+        justification: "{{justification}}"
+        duration_hours: "{{duration_hours}}"
+        data_class: "{{data_class}}"
+        env: "{{env}}"
+        audience: "{{audience}}"
+        compensating_controls: "{{compensating_controls}}"
+      input_schema:
+        type: object
+        properties:
+          repo: { type: string }
+          rule: { type: string }
+          resource: { type: string }
+          justification: { type: string }
+          duration_hours: { type: number }
+          data_class:
+            type: string
+            enum: [public, internal, confidential, restricted]
+          env:
+            type: string
+            enum: [prod, staging, dev, sandbox]
+          audience:
+            type: string
+            enum: [public, internal, "internal-vpc"]
+          compensating_controls:
+            type: array
+            items: { type: string }
+        required: [repo, rule, resource, justification, data_class, env]
+        additionalProperties: false

@@ -1,0 +1,31 @@
+# Empty preset.
+#
+# Starting point for non-security adopters. Replace the example
+# `runbooks` collection with whatever you want to expose to your
+# agents — `coding_standards`, `arch_decisions`, `design_system`,
+# `playbooks`, anything goes. The MCP doesn't care.
+
+server:
+  name: content-mcp
+  instructions: |
+    Before generating or modifying code, consult the content available
+    via the configured tools.
+
+collections:
+  - name: runbooks
+    description: |
+      Operational runbooks the agent should consult before suggesting
+      remediation steps for incidents.
+    sources:
+      - type: github
+        name: my-runbooks
+        owner: your-org
+        repo: runbooks
+        ref: main
+        path: .
+        patterns: ["**/*.md"]
+        token: "${GITHUB_TOKEN}"
+
+tools:
+  description: Tools the agent can invoke. Empty by default.
+  registry: []

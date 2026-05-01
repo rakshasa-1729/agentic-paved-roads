@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# Launcher for the security-mcp container that pulls a fresh GitHub token
+# from the developer's `gh auth login` on every invocation. Avoids storing
+# a PAT in shell rc files, in `~/.cursor/mcp.json`, or anywhere else.
+#
+# MCP clients (Cursor, Claude Desktop, …) launch this binary instead of
+# `docker run` directly. Any extra args are forwarded to docker run, before
+# the image name — so callers can attach mounts:
+#
+#   /abs/path/bin/security-mcp                         # global, no mounts
+#   /abs/path/bin/security-mcp -v $PWD:/data/app       # project, with mount
+#
+# Env vars passed through to the container (override before invoking):
+#
+#   SECURITY_REPO_TOKEN      — github token (default: from `gh auth token`)
+#   EXCEPTION_API_BASE_URL   — exception_tool endpoint (default:
+#                              http://host.docker.internal:8081 — the demo
+#                              stub in exception-api/server.js)
+#   EXCEPTION_API_TOKEN      — auth header for exception_tool (default: "demo")
+#
+# Requires:
+#   - gh installed and `gh auth login` completed for github.com
+#   - docker daemon running
+#   - security-mcp:latest image built (see Dockerfile)
+
+set -euo pipefail
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "security-mcp: 'gh' CLI not found. Install with: brew install gh" >&2
+  exit 1
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "security-mcp: docker not found. Start Docker Desktop." >&2
+  exit 1
+fi
+
+TOKEN="$(gh auth token --hostname github.com 2>/dev/null || true)"
+if [ -z "$TOKEN" ]; then
+  echo "security-mcp: 'gh auth token' returned empty. Run: gh auth login --hostname github.com" >&2
+  exit 1
+fi
+
+# Defaults that make the demo "just work" alongside exception-api/server.js
+# running on the host. host.docker.internal is auto-resolved on Docker
+# Desktop (mac/win); the --add-host below makes it work on Linux too.
+EXCEPTION_API_BASE_URL_VALUE="${EXCEPTION_API_BASE_URL:-http://host.docker.internal:8081}"
+EXCEPTION_API_TOKEN_VALUE="${EXCEPTION_API_TOKEN:-demo}"
+
+exec docker run -i --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -e SECURITY_REPO_TOKEN="$TOKEN" \
+  -e EXCEPTION_API_BASE_URL="$EXCEPTION_API_BASE_URL_VALUE" \
+  -e EXCEPTION_API_TOKEN="$EXCEPTION_API_TOKEN_VALUE" \
+  "$@" \
+  security-mcp:latest
