@@ -28,6 +28,7 @@ const HttpSrc = z.object({
   name_field: z.string().optional(),
   content_field: z.string().optional(),
   items_field: z.string().optional(),
+  timeout_ms: z.number().int().positive().optional(),
 });
 
 const McpSrc = z.object({
@@ -36,6 +37,7 @@ const McpSrc = z.object({
   command: z.string(),
   args: z.array(z.string()).optional(),
   env: z.record(z.string()).optional(),
+  connect_timeout_ms: z.number().int().positive().optional(),
 });
 
 const GitHubSrc = z.object({
@@ -48,6 +50,7 @@ const GitHubSrc = z.object({
   patterns: z.array(z.string()).optional(),
   token: z.string().optional(),
   api_base_url: z.string().optional(),
+  timeout_ms: z.number().int().positive().optional(),
 });
 
 const ContentSource = z.discriminatedUnion("type", [FileSrc, HttpSrc, McpSrc, GitHubSrc]);
@@ -62,6 +65,8 @@ const InlineCommandTool = z.object({
   env: z.record(z.string()).optional(),
   stdin: z.boolean().optional(),
   input_schema: z.record(z.unknown()).optional(),
+  command_timeout_ms: z.number().int().positive().optional(),
+  output_max_bytes: z.number().int().positive().optional(),
 });
 
 const InlineHttpTool = z.object({
@@ -73,6 +78,7 @@ const InlineHttpTool = z.object({
   headers: z.record(z.string()).optional(),
   body_template: z.unknown().optional(),
   input_schema: z.record(z.unknown()).optional(),
+  timeout_ms: z.number().int().positive().optional(),
 });
 
 const InlineTool = z.discriminatedUnion("type", [InlineCommandTool, InlineHttpTool]);

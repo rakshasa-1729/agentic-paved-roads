@@ -1,5 +1,8 @@
 import type { Item, Source } from "./types.js";
 import { interpolateEnv } from "../util/env.js";
+import { abortableFetch } from "../util/timeout.js";
+
+const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface HttpSourceConfig {
   type: "http";
@@ -12,6 +15,7 @@ export interface HttpSourceConfig {
   content_field?: string;
   name_field?: string;
   items_field?: string;
+  timeout_ms?: number;
 }
 
 export class HttpSource implements Source {
@@ -24,6 +28,7 @@ export class HttpSource implements Source {
   private readonly nameField: string;
   private readonly contentField: string;
   private readonly itemsField?: string;
+  private readonly timeoutMs: number;
 
   constructor(cfg: HttpSourceConfig) {
     this.id = cfg.name ?? `http:${cfg.base_url}`;
@@ -37,11 +42,12 @@ export class HttpSource implements Source {
     this.nameField = cfg.name_field ?? "name";
     this.contentField = cfg.content_field ?? "content";
     this.itemsField = cfg.items_field;
+    this.timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
   }
 
   async list(query?: string): Promise<Item[]> {
     const url = this.base + this.listPath + (query ? `?q=${encodeURIComponent(query)}` : "");
-    const res = await fetch(url, { method: this.method, headers: this.headers });
+    const res = await abortableFetch(url, { method: this.method, headers: this.headers }, this.timeoutMs, this.id);
     if (!res.ok) throw new Error(`${this.id} list failed: ${res.status} ${res.statusText}`);
     const body = await this.parseBody(res);
     const rawItems = this.itemsField ? (body as Record<string, unknown>)[this.itemsField] : body;
@@ -51,7 +57,7 @@ export class HttpSource implements Source {
 
   async get(name: string): Promise<Item> {
     const url = this.base + this.getPath.replace("{name}", encodeURIComponent(name));
-    const res = await fetch(url, { method: this.method, headers: this.headers });
+    const res = await abortableFetch(url, { method: this.method, headers: this.headers }, this.timeoutMs, this.id);
     if (!res.ok) throw new Error(`${this.id} get(${name}) failed: ${res.status} ${res.statusText}`);
     const ct = res.headers.get("content-type") ?? "";
     if (ct.includes("application/json")) {

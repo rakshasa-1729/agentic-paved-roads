@@ -4,8 +4,10 @@ import { promisify } from "node:util";
 import mm from "micromatch";
 import type { Item, Source } from "./types.js";
 import { interpolateEnv } from "../util/env.js";
+import { abortableFetch } from "../util/timeout.js";
 
 const exec = promisify(execFile);
+const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface GitHubSourceConfig {
   type: "github";
@@ -17,6 +19,7 @@ export interface GitHubSourceConfig {
   patterns?: string[];
   token?: string;
   api_base_url?: string;
+  timeout_ms?: number;
 }
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -47,6 +50,7 @@ export class GitHubSource implements Source {
   private readonly patterns: string[];
   private readonly tokenFromConfig: string;
   private readonly apiBase: string;
+  private readonly timeoutMs: number;
   private resolvedToken?: string;
   private treeCache?: { ts: number; entries: TreeEntry[] };
 
@@ -58,6 +62,7 @@ export class GitHubSource implements Source {
     this.patterns = cfg.patterns?.length ? cfg.patterns : ["**/*"];
     this.tokenFromConfig = interpolateEnv(cfg.token ?? "");
     this.apiBase = (cfg.api_base_url ?? "https://api.github.com").replace(/\/$/, "");
+    this.timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     this.id = cfg.name ?? `github:${this.owner}/${this.repo}/${this.subpath}@${this.ref}`;
   }
 
@@ -92,12 +97,17 @@ export class GitHubSource implements Source {
     if (!entry) throw new Error(`${this.id}: not found: ${name}`);
 
     const url = `${this.apiBase}/repos/${this.owner}/${this.repo}/contents/${encodeURI(entry.path)}?ref=${encodeURIComponent(this.ref)}`;
-    const res = await fetch(url, {
-      headers: {
-        ...this.authHeaders(),
-        Accept: "application/vnd.github.raw",
+    const res = await abortableFetch(
+      url,
+      {
+        headers: {
+          ...this.authHeaders(),
+          Accept: "application/vnd.github.raw",
+        },
       },
-    });
+      this.timeoutMs,
+      this.id,
+    );
     if (!res.ok) {
       throw new Error(`${this.id} get(${name}) failed: ${res.status} ${res.statusText}`);
     }
@@ -112,7 +122,7 @@ export class GitHubSource implements Source {
       return this.treeCache.entries;
     }
     const url = `${this.apiBase}/repos/${this.owner}/${this.repo}/git/trees/${encodeURIComponent(this.ref)}?recursive=1`;
-    const res = await fetch(url, { headers: this.authHeaders() });
+    const res = await abortableFetch(url, { headers: this.authHeaders() }, this.timeoutMs, this.id);
     if (!res.ok) {
       throw new Error(`${this.id} list failed: ${res.status} ${res.statusText} (${url})`);
     }

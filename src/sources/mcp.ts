@@ -2,6 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Item, Source, ToolEntry, ToolInvokeResult, ToolSource } from "./types.js";
 import { interpolateEnv } from "../util/env.js";
+import { withTimeout } from "../util/timeout.js";
+
+const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 
 export interface McpSourceConfig {
   type: "mcp";
@@ -9,6 +12,7 @@ export interface McpSourceConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  connect_timeout_ms?: number;
 }
 
 class McpClientHolder {
@@ -20,6 +24,7 @@ class McpClientHolder {
   async connect(): Promise<Client> {
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
+    const timeoutMs = this.cfg.connect_timeout_ms ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this.connecting = (async () => {
       const transport = new StdioClientTransport({
         command: this.cfg.command,
@@ -29,7 +34,23 @@ class McpClientHolder {
         ),
       });
       const client = new Client({ name: `security-mcp/${this.id}`, version: "0.1.0" }, { capabilities: {} });
-      await client.connect(transport);
+      try {
+        await withTimeout(
+          client.connect(transport),
+          timeoutMs,
+          `${this.id} mcp connect`,
+          () => {
+            // Kill the child + free pipes; the SDK transport.close()
+            // sends a SIGTERM to the spawned process under the hood.
+            transport.close().catch(() => undefined);
+          },
+        );
+      } catch (err) {
+        // Reset so a subsequent call retries from scratch instead of
+        // returning the rejected connect promise forever.
+        this.connecting = undefined;
+        throw err;
+      }
       this.client = client;
       return client;
     })();

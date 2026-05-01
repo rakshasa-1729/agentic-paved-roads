@@ -1,6 +1,14 @@
 import { spawn } from "node:child_process";
 import type { ToolEntry, ToolInvokeResult, ToolSource } from "./types.js";
 import { interpolateEnv } from "../util/env.js";
+import { abortableFetch } from "../util/timeout.js";
+
+const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
+const DEFAULT_HTTP_TOOL_TIMEOUT_MS = 30_000;
+const DEFAULT_OUTPUT_MAX_BYTES = 1024 * 1024; // 1 MiB per stream
+// Grace period between SIGTERM and SIGKILL for a child that ignores
+// graceful shutdown.
+const KILL_GRACE_MS = 5_000;
 
 export interface CommandToolConfig {
   type: "command";
@@ -12,6 +20,8 @@ export interface CommandToolConfig {
   env?: Record<string, string>;
   stdin?: boolean;
   input_schema?: Record<string, unknown>;
+  command_timeout_ms?: number;
+  output_max_bytes?: number;
 }
 
 export interface HttpToolConfig {
@@ -23,6 +33,7 @@ export interface HttpToolConfig {
   headers?: Record<string, string>;
   body_template?: unknown;
   input_schema?: Record<string, unknown>;
+  timeout_ms?: number;
 }
 
 export type InlineToolConfig = CommandToolConfig | HttpToolConfig;
@@ -71,15 +82,52 @@ export class InlineToolSource implements ToolSource {
         ...process.env,
         ...Object.fromEntries(Object.entries(cfg.env ?? {}).map(([k, v]) => [k, interpolateEnv(v)])),
       };
+      const timeoutMs = cfg.command_timeout_ms ?? DEFAULT_COMMAND_TIMEOUT_MS;
+      const maxBytes = cfg.output_max_bytes ?? DEFAULT_OUTPUT_MAX_BYTES;
+
       const child = spawn(command, args, { cwd: cfg.cwd, env });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (d) => (stdout += d.toString()));
-      child.stderr.on("data", (d) => (stderr += d.toString()));
-      child.on("error", (err) => resolveResult({ ok: false, error: err.message, stdout, stderr }));
-      child.on("close", (code) => {
-        resolveResult({ ok: code === 0, exit_code: code ?? -1, stdout, stderr });
+      const stdout = new CappedBuffer(maxBytes);
+      const stderr = new CappedBuffer(maxBytes);
+      child.stdout.on("data", (d: Buffer) => stdout.push(d));
+      child.stderr.on("data", (d: Buffer) => stderr.push(d));
+
+      let timedOut = false;
+      let resolved = false;
+      const settle = (result: ToolInvokeResult) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(killTimer);
+        clearTimeout(forceKillTimer);
+        resolveResult(result);
+      };
+
+      // SIGTERM at the budget; SIGKILL `KILL_GRACE_MS` later if the
+      // child ignores the polite shutdown.
+      const killTimer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, timeoutMs);
+      const forceKillTimer = setTimeout(() => {
+        if (!child.killed) child.kill("SIGKILL");
+      }, timeoutMs + KILL_GRACE_MS);
+
+      child.on("error", (err) =>
+        settle({ ok: false, error: err.message, stdout: stdout.toString(), stderr: stderr.toString() }),
+      );
+      child.on("close", (code, signal) => {
+        if (timedOut) {
+          settle({
+            ok: false,
+            error: `${cfg.name}: timed out after ${timeoutMs}ms (signal=${signal ?? "SIGTERM"})`,
+            exit_code: code ?? -1,
+            stdout: stdout.toString(),
+            stderr: stderr.toString(),
+          });
+          return;
+        }
+        settle({ ok: code === 0, exit_code: code ?? -1, stdout: stdout.toString(), stderr: stderr.toString() });
       });
+
       if (cfg.stdin && input != null) {
         child.stdin.write(typeof input === "string" ? input : JSON.stringify(input));
         child.stdin.end();
@@ -104,8 +152,9 @@ export class InlineToolSource implements ToolSource {
       body = typeof rendered === "string" ? rendered : JSON.stringify(rendered);
       headers["content-type"] ??= "application/json";
     }
+    const timeoutMs = cfg.timeout_ms ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS;
     try {
-      const res = await fetch(url, { method, headers, body });
+      const res = await abortableFetch(url, { method, headers, body }, timeoutMs, cfg.name);
       const ct = res.headers.get("content-type") ?? "";
       const data = ct.includes("application/json") ? await res.json() : await res.text();
       return {
@@ -117,6 +166,43 @@ export class InlineToolSource implements ToolSource {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
+  }
+}
+
+/**
+ * Accumulator for child-process stdout/stderr that drops bytes once the
+ * cap is reached and appends a single truncation marker. Tracks total
+ * bytes seen so the marker can show how much was discarded.
+ */
+class CappedBuffer {
+  private chunks: Buffer[] = [];
+  private size = 0;
+  private totalSeen = 0;
+  private truncated = false;
+
+  constructor(private readonly maxBytes: number) {}
+
+  push(chunk: Buffer): void {
+    this.totalSeen += chunk.length;
+    if (this.truncated) return;
+    if (this.size + chunk.length <= this.maxBytes) {
+      this.chunks.push(chunk);
+      this.size += chunk.length;
+      return;
+    }
+    const remaining = this.maxBytes - this.size;
+    if (remaining > 0) {
+      this.chunks.push(chunk.subarray(0, remaining));
+      this.size = this.maxBytes;
+    }
+    this.truncated = true;
+  }
+
+  toString(): string {
+    const text = Buffer.concat(this.chunks).toString("utf8");
+    if (!this.truncated) return text;
+    const dropped = this.totalSeen - this.size;
+    return `${text}\n… [truncated ${dropped} bytes]`;
   }
 }
 
