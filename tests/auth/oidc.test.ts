@@ -150,10 +150,12 @@ describe("OIDC middleware", () => {
 
   it("rejects a token with a tampered signature (401)", async () => {
     const token = await mintToken();
-    // Flip the last char of the signature segment.
     const parts = token.split(".");
-    const sig = parts[2];
-    parts[2] = sig.slice(0, -1) + (sig.endsWith("A") ? "B" : "A");
+    // Replace the signature segment with a base64url string of the
+    // right length (RS256 → 256 bytes → 342 chars) that's all 'A'.
+    // Reliably wrong; flipping just the trailing char isn't, since
+    // base64url bit-alignment can leave the decoded bytes unchanged.
+    parts[2] = "A".repeat(parts[2].length);
     const res = await callMcp({ Authorization: `Bearer ${parts.join(".")}` });
     expect(res.status).toBe(401);
   });
