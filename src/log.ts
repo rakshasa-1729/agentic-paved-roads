@@ -8,6 +8,7 @@ const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error:
 
 interface LogContext {
   request_id?: string;
+  principal?: string;
 }
 
 const ctx = new AsyncLocalStorage<LogContext>();
@@ -21,13 +22,13 @@ function currentThreshold(): number {
  * Emit one JSON-line log record to stderr.
  *
  * Stable schema:
- *   {ts, level, event, request_id?, ...fields}
+ *   {ts, level, event, request_id?, principal?, ...fields}
  *
  * - `ts` is ISO-8601 UTC.
  * - `event` is a stable identifier (`fetch_error`, `config_migrated`,
  *   …) — not a free-form message. Use `fields.message` for human text.
- * - `request_id` is pulled from AsyncLocalStorage when set via
- *   `withRequestId`.
+ * - `request_id` and `principal` are pulled from AsyncLocalStorage
+ *   when set via `withRequestId` / `withPrincipal`.
  *
  * Stays compatible with the stdio MCP transport: framing rides on
  * stdout, logs go to stderr.
@@ -41,6 +42,7 @@ export function log(level: LogLevel, event: string, fields: Record<string, unkno
     event,
   };
   if (store?.request_id) record.request_id = store.request_id;
+  if (store?.principal) record.principal = store.principal;
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) record[k] = v;
   }
@@ -53,10 +55,26 @@ export function log(level: LogLevel, event: string, fields: Record<string, unkno
  * fresh UUID is generated.
  */
 export function withRequestId<T>(id: string | undefined, fn: () => T | Promise<T>): T | Promise<T> {
-  return ctx.run({ request_id: id ?? randomUUID() }, fn);
+  const inherited = ctx.getStore() ?? {};
+  return ctx.run({ ...inherited, request_id: id ?? randomUUID() }, fn);
+}
+
+/**
+ * Run `fn` with an authenticated principal attached to log lines.
+ * Inherits any existing context (request_id) so the auth middleware
+ * can wrap the route handler before withRequestId fires.
+ */
+export function withPrincipal<T>(principal: string, fn: () => T | Promise<T>): T | Promise<T> {
+  const inherited = ctx.getStore() ?? {};
+  return ctx.run({ ...inherited, principal }, fn);
 }
 
 /** Read the current request_id, or `undefined` if none is set. */
 export function currentRequestId(): string | undefined {
   return ctx.getStore()?.request_id;
+}
+
+/** Read the current authenticated principal, or `undefined`. */
+export function currentPrincipal(): string | undefined {
+  return ctx.getStore()?.principal;
 }

@@ -7,6 +7,7 @@ import type { LoadedCollection, LoadedConfig } from "./config.js";
 import { handleContent, contentJsonSchema, ContentInputSchema } from "./tools/content.js";
 import { handleToolRegistry, toolRegistryJsonSchema, ToolRegistryInputSchema } from "./tools/tool_registry.js";
 import { log, withRequestId } from "./log.js";
+import { buildAuthMiddleware } from "./auth/index.js";
 
 // The conftest tool conventionally reads .rego files materialized from a
 // collection named one of these. First match wins; falls back to no
@@ -107,7 +108,11 @@ export function buildHttpApp(cfg: LoadedConfig, options: { host?: string; allowe
     res.status(200).json({ status: "ok", transport: "http" });
   });
 
-  app.post("/mcp", async (req, res) => {
+  // Auth runs only on /mcp. /healthz stays open so liveness probes
+  // and load-balancer health checks don't need credentials.
+  const authMiddleware = buildAuthMiddleware(cfg.auth);
+
+  app.post("/mcp", authMiddleware, async (req, res) => {
     const server = buildServer(cfg);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try {

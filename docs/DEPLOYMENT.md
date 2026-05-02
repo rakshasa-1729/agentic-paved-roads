@@ -47,13 +47,24 @@ Lambda / any other reverse-proxied target front. See
                   └──────────────────────┘                   └──────────────────────┘
 ```
 
-**Auth boundary**: the platform fronting the MCP (IAP on Cloud Run, IAM
-on a Lambda Function URL) authenticates the user. The MCP container
-trusts the platform-injected identity header
-(`X-Goog-Authenticated-User-Email` on GCP, the corresponding signed
-identity on AWS). The container itself does no token verification —
-that keeps the MCP code focused on its job and lets the cloud platform
-own auth rotation.
+**Auth boundary**: pick where authentication happens. Three modes
+ship out of the box, selected by the `auth.mode` config field:
+
+- `iap` — the platform fronting the MCP (IAP on Cloud Run, an API
+  Gateway authorizer on AWS, an Envoy filter, etc.) authenticates the
+  user and forwards a trusted identity header
+  (`X-Goog-Authenticated-User-Email` on GCP by default; configurable).
+  The MCP trusts the header verbatim and never verifies a JWT itself.
+  Lowest config, lowest crypto cost; safe only when nothing on the
+  network path can spoof the header.
+- `oidc` — the MCP verifies an `Authorization: Bearer <jwt>` against
+  a configured issuer + audience using a remote JWKS. Bring your own
+  IdP (Google, Okta, Cognito, internal). The principal is `email`,
+  falling back to `preferred_username`, falling back to `sub`.
+- `none` — no auth (development / behind a closed network only).
+
+Whichever mode you pick, the authenticated principal is recorded on
+every `tool.invoked` audit log line.
 
 ---
 
@@ -197,18 +208,28 @@ typical MCP sessions but long-lived connections will reconnect.
 
 ## 4. Auth comparison
 
-| Mechanism                          | Cloud Run | Lambda | Notes |
-|------------------------------------|-----------|--------|-------|
-| IAP-injected header (no JWT verify)| ✅        | n/a    | Default for the Cloud Run path. |
-| IAM SigV4 (Function URL)           | n/a       | ✅     | Default for the Lambda path. Devs need AWS creds. |
-| Cognito (Function URL)             | n/a       | ✅     | Human-friendly browser login; SDK clients need OAuth. |
-| OIDC bearer (any provider)         | ✅        | ✅     | Bring your own IdP. Requires server-side auth code — **not yet shipped.** |
-| None (dev only)                    | ⚠         | ⚠      | Don't put this in front of anyone real. |
+| Mechanism                          | Cloud Run | Lambda | Config snippet |
+|------------------------------------|-----------|--------|----------------|
+| IAP-injected header (no JWT verify)| ✅        | ✅     | `auth: { mode: iap, trusted_header: X-Goog-Authenticated-User-Email }` |
+| IAM SigV4 (Function URL)           | n/a       | ✅     | The platform handles auth; MCP runs in `iap` mode trusting an IAM-injected header. |
+| Cognito (Function URL)             | n/a       | ✅     | Either IAP-style (Cognito injects a header) or `oidc` mode against the user pool's issuer. |
+| OIDC bearer (any provider)         | ✅        | ✅     | `auth: { mode: oidc, issuer: https://accounts.google.com, audience: <aud> }` |
+| None (dev only)                    | ⚠         | ⚠      | `auth: { mode: none }`. Don't put this in front of anyone real. |
 
-The current container does NOT verify OIDC bearer tokens itself. Add
-a small middleware (~100 lines, `jose` / `jsonwebtoken`) in front of
-`/mcp` if you need to bring your own IdP; until then, rely on IAP / IAM
-as the auth boundary.
+**Sample OIDC config** (Google as IdP, devs use `gcloud auth print-identity-token`):
+
+```yaml
+auth:
+  mode: oidc
+  issuer: https://accounts.google.com
+  audience: <project-number>-<hash>.apps.googleusercontent.com
+  # jwks_uri is auto-discovered from <issuer>/.well-known/openid-configuration;
+  # set it explicitly for IdPs that don't expose discovery.
+```
+
+The principal extracted from a verified token is `email`, falling back
+to `preferred_username`, falling back to `sub`. It appears as the
+`principal` field on every `tool.invoked` log line.
 
 ---
 

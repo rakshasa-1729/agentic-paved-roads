@@ -112,10 +112,29 @@ const ServerInfo = z.object({
   instructions: z.string().optional(),
 });
 
+// Auth shape for the streamable-HTTP transport. `none` is the default
+// (safe for stdio, intended for behind a closed network or already-
+// authenticated edge proxy). `iap` trusts a configured platform header.
+// `oidc` verifies a Bearer JWT against a configured issuer + audience.
+const AuthNone = z.object({ mode: z.literal("none") });
+const AuthIap = z.object({
+  mode: z.literal("iap"),
+  trusted_header: z.string().default("X-Goog-Authenticated-User-Email"),
+});
+const AuthOidc = z.object({
+  mode: z.literal("oidc"),
+  issuer: z.string().url(),
+  audience: z.union([z.string(), z.array(z.string())]),
+  jwks_uri: z.string().url().optional(),
+});
+const AuthConfig = z.discriminatedUnion("mode", [AuthNone, AuthIap, AuthOidc]);
+export type AuthConfigType = z.infer<typeof AuthConfig>;
+
 const ConfigSchema = z.object({
   server: ServerInfo.default({}),
   collections: z.array(Collection).default([]),
   tools: ToolsCategory.default({ registry: [], sources: [] }),
+  auth: AuthConfig.default({ mode: "none" }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -140,6 +159,7 @@ export interface LoadedConfig {
   server: Config["server"];
   collections: LoadedCollection[];
   tools: LoadedToolsCategory;
+  auth: AuthConfigType;
 }
 
 /**
@@ -261,5 +281,6 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
       registry: new InlineToolSource(dedupTools),
       mcpSources: cfg.tools.sources.map((s) => new McpToolSource(s)),
     },
+    auth: cfg.auth,
   };
 }
