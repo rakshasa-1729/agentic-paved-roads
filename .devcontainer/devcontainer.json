@@ -1,0 +1,56 @@
+// Dev container for security-mcp. Open in VS Code / Cursor / Codespaces:
+// the editor offers "Reopen in Container" on first launch.
+//
+// What you get:
+//   - Node 20 + npm + tsx
+//   - conftest 0.56 on PATH (baked in via the Dockerfile)
+//   - gh CLI (for the gh-auth-token fallback path tests + day-to-day)
+//   - Docker-in-Docker so you can build/run the security-mcp image
+//   - Port 8080 forwarded for HTTP-mode smoke tests
+//
+// First-attach tasks (postCreate): npm ci + npm run build. Subsequent
+// attaches reuse the cached node_modules so this is one-shot.
+{
+  "name": "security-mcp",
+  "build": { "dockerfile": "Dockerfile" },
+
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": { "label": "security-mcp http", "onAutoForward": "silent" }
+  },
+
+  "postCreateCommand": "npm ci && npm run build",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "tsandall.opa"
+      ],
+      "settings": {
+        "editor.formatOnSave": false,
+        "typescript.tsdk": "node_modules/typescript/lib"
+      }
+    }
+  },
+
+  // Run as the `node` user that the base image already provisions.
+  // Avoids root-owned node_modules and matches the production
+  // container's non-root posture.
+  "remoteUser": "node"
+
+  // To persist the host's gh-cli auth across container rebuilds (so
+  // devs don't re-`gh auth login` every time), uncomment below — but
+  // only if you actually have ~/.config/gh on the host. Docker bind
+  // mounts fail when the source path doesn't exist.
+  //
+  // "mounts": [
+  //   "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind,consistency=cached"
+  // ]
+}

@@ -34,6 +34,12 @@ collections in their config; the only constant is `tool_registry`.
 
 ## Quick start (local)
 
+> **Or:** open the repo in VS Code / Cursor / GitHub Codespaces and
+> accept the "Reopen in Container" prompt. The shipped
+> [`.devcontainer/`](.devcontainer/devcontainer.json) bakes in
+> Node 20, conftest, gh, and Docker-in-Docker so you can build, test,
+> and run the bundled image without touching the host.
+
 ```bash
 npm install && npm run build
 npx security-mcp init               # writes ./security.config.yaml from the security preset
