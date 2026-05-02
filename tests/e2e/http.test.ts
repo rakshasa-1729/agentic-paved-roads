@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { type Server } from "node:http";
 import { AddressInfo } from "node:net";
-import { buildHttpApp } from "../../src/index.js";
+import { buildHttpApp } from "../../src/server.js";
 import { loadConfig } from "../../src/config.js";
 
 // In-process HTTP E2E: build the same express app `serveHttp` uses,

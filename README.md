@@ -35,13 +35,23 @@ collections in their config; the only constant is `tool_registry`.
 ## Quick start (local)
 
 ```bash
-npm install
-cp security.config.example.yaml security.config.yaml
-npx tsx src/index.ts          # stdio MCP server
-# or
-npm run build && npm start
-# or run against the MCP Inspector
-npm run inspector
+npm install && npm run build
+npx security-mcp init               # writes ./security.config.yaml from the security preset
+npx security-mcp validate           # parses + probes every source
+npx security-mcp doctor             # environment diagnostics
+npx security-mcp serve              # run the server (stdio)
+```
+
+`init`, `validate`, and `doctor` each accept `--help`. Pass `--preset
+empty` to `init` for a non-security starter (one example collection,
+no security preset baked in).
+
+For development:
+
+```bash
+npm run dev                   # tsx src/index.ts — auto-recompiles
+npm run inspector             # run against the MCP Inspector
+npm test                      # vitest
 ```
 
 ## Docker
@@ -248,9 +258,16 @@ directive on every call (not just once at tool-list time).
 
 ```
 src/
-  index.ts              # MCP server + per-collection tool routing
+  index.ts              # CLI dispatcher (init / validate / doctor / serve)
+  server.ts             # MCP server + per-collection tool routing + http app
   config.ts             # YAML schema (zod) + loader
   policies-cache.ts     # materialize .rego files for conftest
+  log.ts                # JSON-line logger + per-call request_id
+  cli/
+    serve.ts            # `serve` subcommand (default)
+    init.ts             # `init` — copy a preset to ./security.config.yaml
+    validate.ts         # `validate` — schema + per-source probe
+    doctor.ts           # `doctor` — environment diagnostics
   sources/
     types.ts            # Source / ToolSource interfaces
     file.ts             # local glob source
@@ -261,7 +278,9 @@ src/
   tools/
     content.ts          # generic collection handler (list/get)
     tool_registry.ts    # tool registry handler (list/describe/invoke)
-  util/env.ts           # ${ENV_VAR} interpolation
+  util/
+    env.ts              # ${ENV_VAR} interpolation
+    timeout.ts          # abortableFetch + withTimeout helpers
 presets/
   security.yaml         # default preset — the four-collection shape above
   empty.yaml            # starting point for non-security adopters
