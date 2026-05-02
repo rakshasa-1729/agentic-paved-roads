@@ -19,6 +19,55 @@ function currentThreshold(): number {
 }
 
 /**
+ * Resolve the active output format. `LOG_FORMAT=pretty|json` wins; if
+ * unset, pretty when stderr is a TTY (interactive dev), json otherwise
+ * (containers, pipes, log shippers). The MCP transport choice is
+ * irrelevant — logs always go to stderr while framing rides on stdout.
+ */
+function currentFormat(): "json" | "pretty" {
+  const raw = process.env.LOG_FORMAT?.toLowerCase();
+  if (raw === "pretty" || raw === "json") return raw;
+  return process.stderr.isTTY ? "pretty" : "json";
+}
+
+const ANSI = {
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  red: "\x1b[31m",
+  yellow: "\x1b[33m",
+  green: "\x1b[32m",
+  blue: "\x1b[34m",
+  cyan: "\x1b[36m",
+};
+const LEVEL_COLOR: Record<LogLevel, string> = {
+  debug: ANSI.dim,
+  info: ANSI.green,
+  warn: ANSI.yellow,
+  error: ANSI.red,
+};
+
+function formatPretty(record: Record<string, unknown>): string {
+  const { ts, level, event, request_id, principal, ...rest } = record as {
+    ts: string;
+    level: LogLevel;
+    event: string;
+    request_id?: string;
+    principal?: string;
+  } & Record<string, unknown>;
+  // HH:MM:SS.mmm — drop the date prefix; ops will care about wall
+  // clock at the line scale, not the year.
+  const time = ts.slice(11, 23);
+  const lvl = LEVEL_COLOR[level] + level.padEnd(5) + ANSI.reset;
+  const evt = ANSI.cyan + event + ANSI.reset;
+  const id = request_id ? ` ${ANSI.dim}[${request_id.slice(0, 8)}]${ANSI.reset}` : "";
+  const who = principal ? ` ${ANSI.blue}${principal}${ANSI.reset}` : "";
+  const fields = Object.keys(rest).length
+    ? " " + Object.entries(rest).map(([k, v]) => `${ANSI.dim}${k}=${ANSI.reset}${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ")
+    : "";
+  return `${ANSI.dim}${time}${ANSI.reset} ${lvl} ${evt}${id}${who}${fields}`;
+}
+
+/**
  * Emit one JSON-line log record to stderr.
  *
  * Stable schema:
@@ -46,7 +95,8 @@ export function log(level: LogLevel, event: string, fields: Record<string, unkno
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) record[k] = v;
   }
-  process.stderr.write(JSON.stringify(record) + "\n");
+  const line = currentFormat() === "pretty" ? formatPretty(record) : JSON.stringify(record);
+  process.stderr.write(line + "\n");
 }
 
 /**

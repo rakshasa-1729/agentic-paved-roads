@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { AddressInfo } from "node:net";
 import { GitHubSource } from "../../src/sources/github.js";
@@ -143,6 +143,86 @@ describe("GitHubSource (integration)", () => {
       token: "t",
     });
     await expect(src.get("nope.md")).rejects.toThrow(/stub-gh: not found: nope\.md/);
+  });
+
+  it("warns at construction when ref is unpinned (default 'main')", () => {
+    const buf: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((c) => {
+      buf.push(typeof c === "string" ? c : c.toString("utf8"));
+      return true;
+    });
+    try {
+      // No `ref` specified — defaults to 'main'.
+      new GitHubSource({ type: "github", name: "unpinned", owner: "o", repo: "r", api_base_url: baseUrl, token: "t" });
+    } finally {
+      spy.mockRestore();
+    }
+    const events = buf
+      .join("")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { event: string; ref?: string });
+    const warn = events.find((e) => e.event === "github.unpinned_ref");
+    expect(warn?.ref).toBe("main");
+  });
+
+  it("does not warn when ref is pinned to a tag or sha", () => {
+    const buf: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((c) => {
+      buf.push(typeof c === "string" ? c : c.toString("utf8"));
+      return true;
+    });
+    try {
+      new GitHubSource({ type: "github", name: "pinned", owner: "o", repo: "r", ref: "v1.2.3", api_base_url: baseUrl, token: "t" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(buf.join("")).not.toContain("github.unpinned_ref");
+  });
+
+  it("warns once when GitHub returns x-ratelimit-remaining < 100", async () => {
+    // Stand up a stub that emits a tight rate-limit header.
+    const lowServer = createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "x-ratelimit-remaining": "42",
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-reset": "1700000000",
+      });
+      res.end(JSON.stringify({ tree: [], truncated: false }));
+    });
+    await new Promise<void>((r) => lowServer.listen(0, "127.0.0.1", r));
+    const port = (lowServer.address() as AddressInfo).port;
+
+    const buf: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((c) => {
+      buf.push(typeof c === "string" ? c : c.toString("utf8"));
+      return true;
+    });
+    try {
+      const src = new GitHubSource({
+        type: "github",
+        name: "rate-low",
+        owner: "o",
+        repo: "r",
+        ref: "v1",                 // pinned, so we don't get a separate unpinned warn
+        api_base_url: `http://127.0.0.1:${port}`,
+        token: "t",
+      });
+      await src.list();
+      await src.list(); // second call should NOT re-warn (cache hit + once-only flag)
+    } finally {
+      spy.mockRestore();
+      await new Promise<void>((r, j) => lowServer.close((err) => (err ? j(err) : r())));
+    }
+    const warns = buf
+      .join("")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { event: string; remaining?: number })
+      .filter((e) => e.event === "github.rate_limit_low");
+    expect(warns).toHaveLength(1);
+    expect(warns[0].remaining).toBe(42);
   });
 
   it("caches the tree for 60s within a single source instance", async () => {

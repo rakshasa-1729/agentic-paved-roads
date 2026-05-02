@@ -10,6 +10,7 @@ Commands:
   init        Write a starter security.config.yaml from a bundled preset.
   validate    Parse a config and probe each source.
   doctor      Print environment diagnostics.
+  inspect     Connect in-process and list / describe / invoke tools.
 
 Pass -h / --help to any command for its options.
 
@@ -31,6 +32,8 @@ async function loadCommand(name: string): Promise<CmdRunner> {
       return (await import("./cli/validate.js")).run;
     case "doctor":
       return (await import("./cli/doctor.js")).run;
+    case "inspect":
+      return (await import("./cli/inspect.js")).run;
     default:
       throw new Error(`unknown command: ${name}`);
   }

@@ -65,6 +65,13 @@ export class GitHubSource implements Source {
     this.apiBase = (cfg.api_base_url ?? "https://api.github.com").replace(/\/$/, "");
     this.timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     this.id = cfg.name ?? `github:${this.owner}/${this.repo}/${this.subpath}@${this.ref}`;
+    if (cfg.ref === undefined || cfg.ref === "main" || cfg.ref === "master") {
+      // Pinning to a branch makes the source silently roll forward
+      // when upstream changes — agents see different content for the
+      // same query depending on when they call. Pin to a tag or sha
+      // for reproducibility.
+      log("warn", "github.unpinned_ref", { source_id: this.id, ref: this.ref });
+    }
   }
 
   async list(query?: string): Promise<Item[]> {
@@ -109,6 +116,7 @@ export class GitHubSource implements Source {
       this.timeoutMs,
       this.id,
     );
+    this.checkRateLimit(res);
     if (!res.ok) {
       throw new Error(`${this.id} get(${name}) failed: ${res.status} ${res.statusText}`);
     }
@@ -124,6 +132,7 @@ export class GitHubSource implements Source {
     }
     const url = `${this.apiBase}/repos/${this.owner}/${this.repo}/git/trees/${encodeURIComponent(this.ref)}?recursive=1`;
     const res = await abortableFetch(url, { headers: this.authHeaders() }, this.timeoutMs, this.id);
+    this.checkRateLimit(res);
     if (!res.ok) {
       throw new Error(`${this.id} list failed: ${res.status} ${res.statusText} (${url})`);
     }
@@ -134,6 +143,29 @@ export class GitHubSource implements Source {
     }
     this.treeCache = { ts: Date.now(), entries: body.tree ?? [] };
     return this.treeCache.entries;
+  }
+
+  private rateLimitWarned = false;
+
+  /**
+   * Inspect the GitHub rate-limit headers and warn once when remaining
+   * drops below 100. The unauthenticated quota is 60/hr; the
+   * authenticated quota is 5000/hr — running below 100 means the
+   * source is one busy day from a 403.
+   */
+  private checkRateLimit(res: Response): void {
+    if (this.rateLimitWarned) return;
+    const raw = res.headers.get("x-ratelimit-remaining");
+    if (raw == null) return; // header absent (test stubs, non-GitHub mirrors)
+    const remaining = Number(raw);
+    if (!Number.isFinite(remaining) || remaining > 100) return;
+    log("warn", "github.rate_limit_low", {
+      source_id: this.id,
+      remaining,
+      limit: Number(res.headers.get("x-ratelimit-limit")) || undefined,
+      reset: res.headers.get("x-ratelimit-reset") ?? undefined,
+    });
+    this.rateLimitWarned = true;
   }
 
   private authHeaders(): Record<string, string> {

@@ -39,12 +39,22 @@ npm install && npm run build
 npx security-mcp init               # writes ./security.config.yaml from the security preset
 npx security-mcp validate           # parses + probes every source
 npx security-mcp doctor             # environment diagnostics
+npx security-mcp inspect            # list / describe / invoke tools in-process
 npx security-mcp serve              # run the server (stdio)
 ```
 
-`init`, `validate`, and `doctor` each accept `--help`. Pass `--preset
-empty` to `init` for a non-security starter (one example collection,
-no security preset baked in).
+`init`, `validate`, `doctor`, `inspect`, and `serve` each accept
+`--help`. Pass `--preset empty` to `init` for a non-security starter.
+
+`serve` accepts flag overrides for ad-hoc invocation:
+
+```bash
+npx security-mcp serve --transport http --port 8080 --host 127.0.0.1 --config ./other.yaml
+```
+
+Logs are JSON when stderr is piped (containers, log shippers) and
+human-readable with ANSI colors when stderr is a TTY. Force one or
+the other with `LOG_FORMAT=json|pretty`.
 
 For development:
 

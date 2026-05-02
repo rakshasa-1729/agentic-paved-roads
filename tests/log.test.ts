@@ -10,7 +10,7 @@ interface Captured {
   [k: string]: unknown;
 }
 
-function captureStderr(): { lines: () => Captured[]; restore: () => void } {
+function captureStderr(): { lines: () => Captured[]; rawText: () => string; restore: () => void } {
   const buf: string[] = [];
   const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
     buf.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
@@ -23,6 +23,7 @@ function captureStderr(): { lines: () => Captured[]; restore: () => void } {
         .split("\n")
         .filter(Boolean)
         .map((l) => JSON.parse(l) as Captured),
+    rawText: () => buf.join(""),
     restore: () => spy.mockRestore(),
   };
 }
@@ -76,6 +77,34 @@ describe("log", () => {
     log("info", "test.event");
     const [line] = cap.lines();
     expect(line.request_id).toBeUndefined();
+  });
+
+  it("LOG_FORMAT=pretty emits an ANSI-colored single line, not JSON", () => {
+    process.env.LOG_FORMAT = "pretty";
+    try {
+      log("info", "pretty.event", { foo: "bar" });
+    } finally {
+      delete process.env.LOG_FORMAT;
+    }
+    const raw = cap.rawText();
+    expect(raw).not.toMatch(/^\{"ts"/);
+    expect(raw).toContain("pretty.event");
+    expect(raw).toMatch(/\x1b\[/); // ANSI escape sequence
+    // ANSI reset interleaves "foo=" and "bar"; strip codes and check.
+    const stripped = raw.replace(/\x1b\[[0-9;]*m/g, "");
+    expect(stripped).toContain("foo=bar");
+    expect(stripped).toContain("info");
+  });
+
+  it("LOG_FORMAT=json forces JSON even when stderr is a TTY", () => {
+    process.env.LOG_FORMAT = "json";
+    try {
+      log("info", "json.event");
+    } finally {
+      delete process.env.LOG_FORMAT;
+    }
+    const [line] = cap.lines();
+    expect(line.event).toBe("json.event");
   });
 });
 
