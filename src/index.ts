@@ -12,6 +12,7 @@ import { loadConfig } from "./config.js";
 import { materializePolicies } from "./policies-cache.js";
 import { handleContent, contentJsonSchema, ContentInputSchema } from "./tools/content.js";
 import { handleToolRegistry, toolRegistryJsonSchema, ToolRegistryInputSchema } from "./tools/tool_registry.js";
+import { log, withRequestId } from "./log.js";
 
 const CONFIG_PATH = process.env.SECURITY_MCP_CONFIG ?? "./security.config.yaml";
 
@@ -69,59 +70,67 @@ function buildServer(cfg: LoadedConfig): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
-    try {
-      let result: unknown;
-      if (name === "tool_registry") {
-        result = await handleToolRegistry(cfg.tools, ToolRegistryInputSchema.parse(args ?? {}));
-      } else {
-        const collection = collectionByName.get(name);
-        if (!collection) throw new Error(`unknown tool: ${name}`);
-        result = await handleContent(collection, ContentInputSchema.parse(args ?? {}));
+    return withRequestId(undefined, async () => {
+      const start = Date.now();
+      try {
+        let result: unknown;
+        if (name === "tool_registry") {
+          result = await handleToolRegistry(cfg.tools, ToolRegistryInputSchema.parse(args ?? {}));
+        } else {
+          const collection = collectionByName.get(name);
+          if (!collection) throw new Error(`unknown tool: ${name}`);
+          result = await handleContent(collection, ContentInputSchema.parse(args ?? {}));
+        }
+        log("info", "tool.invoked", { tool: name, duration_ms: Date.now() - start });
+        return {
+          content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log("warn", "tool.failed", { tool: name, duration_ms: Date.now() - start, error: message });
+        return {
+          isError: true,
+          content: [{ type: "text", text: message }],
+        };
       }
-      return {
-        content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        isError: true,
-        content: [{ type: "text", text: message }],
-      };
-    }
+    });
   });
 
   return server;
 }
 
-function startupBanner(cfg: LoadedConfig, materialized: number, policiesCacheDir: string, transportLabel: string): string {
-  const collectionSummary = cfg.collections.length === 0
-    ? "collections=0"
-    : `collections=${cfg.collections.length}[${cfg.collections.map((c) => `${c.name}:${c.sources.length}`).join(",")}]`;
-  return (
-    `security-mcp started (transport=${transportLabel}, config=${CONFIG_PATH}, ` +
-    `org=${cfg.server.organization ?? "n/a"}, ${collectionSummary}, ` +
-    `tools=registry+${cfg.tools.mcpSources.length} mcp, ` +
-    `policies_cached=${materialized}@${policiesCacheDir})\n`
-  );
+function logStarted(cfg: LoadedConfig, materialized: number, policiesCacheDir: string, transportLabel: string): void {
+  log("info", "server.started", {
+    transport: transportLabel,
+    config: CONFIG_PATH,
+    organization: cfg.server.organization,
+    collections: cfg.collections.map((c) => ({ name: c.name, sources: c.sources.length })),
+    tool_registry_mcp_sources: cfg.tools.mcpSources.length,
+    policies_cached: materialized,
+    policies_cache_dir: policiesCacheDir,
+  });
 }
 
 async function serveStdio(cfg: LoadedConfig, materialized: number, policiesCacheDir: string): Promise<void> {
   const server = buildServer(cfg);
   await server.connect(new StdioServerTransport());
-  process.stderr.write(startupBanner(cfg, materialized, policiesCacheDir, "stdio"));
+  logStarted(cfg, materialized, policiesCacheDir, "stdio");
 }
 
-async function serveHttp(cfg: LoadedConfig, materialized: number, policiesCacheDir: string): Promise<void> {
-  const port = Number(process.env.PORT ?? 8080);
-  const host = process.env.HOST ?? "0.0.0.0";
-
-  // Stateless: each POST /mcp gets its own Server + transport. Server
-  // construction is cheap; the heavy lift (loadConfig + policies cache)
-  // happened once at process start. The trade-off is no server-pushed
-  // notifications across the connection, which we don't use anyway.
+/**
+ * Build the express app that fronts the streamable-HTTP transport.
+ * Pure (no listen) so tests can bind it to an ephemeral port without
+ * dragging in supertest.
+ *
+ * Stateless: each POST /mcp gets its own Server + transport. Server
+ * construction is cheap; the heavy lift (loadConfig + policies cache)
+ * happened once at process start. The trade-off is no server-pushed
+ * notifications across the connection, which we don't use anyway.
+ */
+export function buildHttpApp(cfg: LoadedConfig, options: { host?: string; allowedHosts?: string[] } = {}): import("express").Express {
   const app = createMcpExpressApp({
-    host,
-    allowedHosts: process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean),
+    host: options.host,
+    allowedHosts: options.allowedHosts,
   });
 
   app.get("/healthz", (_req, res) => {
@@ -139,7 +148,7 @@ async function serveHttp(cfg: LoadedConfig, materialized: number, policiesCacheD
         server.close().catch(() => undefined);
       });
     } catch (err) {
-      process.stderr.write(`security-mcp: /mcp error: ${err instanceof Error ? err.message : String(err)}\n`);
+      log("error", "http.request_error", { error: err instanceof Error ? err.message : String(err) });
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
@@ -166,9 +175,20 @@ async function serveHttp(cfg: LoadedConfig, materialized: number, policiesCacheD
     });
   });
 
+  return app;
+}
+
+async function serveHttp(cfg: LoadedConfig, materialized: number, policiesCacheDir: string): Promise<void> {
+  const port = Number(process.env.PORT ?? 8080);
+  const host = process.env.HOST ?? "0.0.0.0";
+  const app = buildHttpApp(cfg, {
+    host,
+    allowedHosts: process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean),
+  });
+
   await new Promise<void>((resolve) => {
     app.listen(port, host, () => {
-      process.stderr.write(startupBanner(cfg, materialized, policiesCacheDir, `http :${port}`));
+      logStarted(cfg, materialized, policiesCacheDir, `http :${port}`);
       resolve();
     });
   });
@@ -184,9 +204,9 @@ async function main(): Promise<void> {
     try {
       materialized = await materializePolicies(policyCollection.sources, policiesCacheDir);
     } catch (err) {
-      process.stderr.write(
-        `security-mcp: materializePolicies failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      log("error", "policies_cache.materialize_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -201,6 +221,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`security-mcp fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+  log("error", "server.fatal", {
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
   process.exit(1);
 });

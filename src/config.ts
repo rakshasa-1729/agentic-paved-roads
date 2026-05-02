@@ -9,6 +9,7 @@ import { HttpSource } from "./sources/http.js";
 import { McpResourceSource, McpToolSource } from "./sources/mcp.js";
 import { GitHubSource } from "./sources/github.js";
 import { InlineToolSource } from "./sources/command.js";
+import { log } from "./log.js";
 
 const FileSrc = z.object({
   type: z.literal("file"),
@@ -186,10 +187,11 @@ export function translateLegacyShape(raw: unknown): unknown {
 
   if (migrated) {
     out.collections = existing;
-    process.stderr.write(
-      `security-mcp: migrated legacy top-level keys (policies/risk/paved_roads) into collections[]. ` +
-        `Update your config to use the new shape — see docs/CONFIGURING.md.\n`,
-    );
+    log("warn", "config.legacy_shape_migrated", {
+      message:
+        "migrated legacy top-level keys (policies/risk/paved_roads) into collections[]. " +
+        "Update your config to use the new shape — see docs/CONFIGURING.md.",
+    });
   } else if (existing.length > 0) {
     out.collections = existing;
   }

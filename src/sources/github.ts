@@ -5,6 +5,7 @@ import mm from "micromatch";
 import type { Item, Source } from "./types.js";
 import { interpolateEnv } from "../util/env.js";
 import { abortableFetch } from "../util/timeout.js";
+import { log } from "../log.js";
 
 const exec = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -167,7 +168,7 @@ export class GitHubSource implements Source {
     }
     this.resolvedToken = await this.ghAuthToken();
     if (this.resolvedToken) {
-      process.stderr.write(`${this.id}: using token from \`gh auth token\`\n`);
+      log("info", "github.token_resolved", { source_id: this.id, source: "gh-cli" });
     }
   }
 

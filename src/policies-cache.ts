@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Source } from "./sources/types.js";
+import { log } from "./log.js";
 
 const REGO_PATTERN = /\.rego$/i;
 
@@ -24,7 +25,7 @@ export async function materializePolicies(sources: Source[], targetDir: string):
     try {
       items = await src.list();
     } catch (err) {
-      process.stderr.write(`policies-cache: list failed for ${src.id}: ${describe(err)}\n`);
+      log("warn", "policies_cache.list_failed", { source_id: src.id, error: describe(err) });
       continue;
     }
     for (const item of items) {
@@ -37,7 +38,11 @@ export async function materializePolicies(sources: Source[], targetDir: string):
         await writeFile(dest, full.content, "utf8");
         total++;
       } catch (err) {
-        process.stderr.write(`policies-cache: get(${item.name}) failed in ${src.id}: ${describe(err)}\n`);
+        log("warn", "policies_cache.get_failed", {
+          source_id: src.id,
+          item: item.name,
+          error: describe(err),
+        });
       }
     }
   }

@@ -42,13 +42,17 @@ describe("translateLegacyShape", () => {
     expect(names).toEqual(["policy_tool", "risk_index", "paved_road_tool"]);
   });
 
-  it("emits a deprecation warning to stderr when migrating", () => {
+  it("emits a structured deprecation warning when migrating", () => {
     const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     translateLegacyShape({ policies: { sources: [] } });
     expect(writeSpy).toHaveBeenCalledOnce();
-    const message = String(writeSpy.mock.calls[0][0]);
-    expect(message).toContain("migrated legacy");
-    expect(message).toContain("policies/risk/paved_roads");
+
+    const line = String(writeSpy.mock.calls[0][0]).trim();
+    const record = JSON.parse(line) as Record<string, unknown>;
+    expect(record.level).toBe("warn");
+    expect(record.event).toBe("config.legacy_shape_migrated");
+    expect(record.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(String(record.message)).toContain("policies/risk/paved_roads");
   });
 
   it("does not warn when the config already uses the new shape", () => {
