@@ -6,6 +6,7 @@ import { loadConfig } from "../config.js";
 import { materializePolicies } from "../policies-cache.js";
 import { buildHttpApp, buildServer, findPolicyCollection, logStarted } from "../server.js";
 import { log } from "../log.js";
+import { type AuditRecorder, openAuditLog } from "../audit.js";
 
 export function defaultConfigPath(): string {
   return process.env.SECURITY_MCP_CONFIG ?? "./security.config.yaml";
@@ -32,6 +33,8 @@ export async function run(_args: string[]): Promise<number> {
   const configPath = defaultConfigPath();
   const cfg = await loadConfig(configPath);
 
+  const audit = openAuditLog(cfg.auditLogPath);
+
   let materialized = 0;
   const policyCollection = findPolicyCollection(cfg.collections);
   if (policyCollection) {
@@ -46,9 +49,9 @@ export async function run(_args: string[]): Promise<number> {
 
   const transport = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
   if (transport === "http" || transport === "streamable-http") {
-    await serveHttp(cfg, materialized, policiesCacheDir, configPath);
+    await serveHttp(cfg, materialized, policiesCacheDir, configPath, audit);
   } else if (transport === "stdio") {
-    await serveStdio(cfg, materialized, policiesCacheDir, configPath);
+    await serveStdio(cfg, materialized, policiesCacheDir, configPath, audit);
   } else {
     throw new Error(`unsupported MCP_TRANSPORT="${transport}" (expected stdio or http)`);
   }
@@ -60,8 +63,9 @@ async function serveStdio(
   materialized: number,
   policiesCacheDir: string,
   configPath: string,
+  audit: AuditRecorder,
 ): Promise<void> {
-  const server = buildServer(cfg);
+  const server = buildServer(cfg, audit);
   await server.connect(new StdioServerTransport());
   logStarted(cfg, materialized, policiesCacheDir, "stdio", configPath);
 }
@@ -71,12 +75,14 @@ async function serveHttp(
   materialized: number,
   policiesCacheDir: string,
   configPath: string,
+  audit: AuditRecorder,
 ): Promise<void> {
   const port = Number(process.env.PORT ?? 8080);
   const host = process.env.HOST ?? "0.0.0.0";
   const app = buildHttpApp(cfg, {
     host,
     allowedHosts: process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean),
+    audit,
   });
 
   await new Promise<void>((resolve) => {

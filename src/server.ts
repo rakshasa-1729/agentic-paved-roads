@@ -6,8 +6,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { LoadedCollection, LoadedConfig } from "./config.js";
 import { handleContent, contentJsonSchema, ContentInputSchema } from "./tools/content.js";
 import { handleToolRegistry, toolRegistryJsonSchema, ToolRegistryInputSchema } from "./tools/tool_registry.js";
-import { log, withRequestId } from "./log.js";
+import { currentPrincipal, log, withRequestId, currentRequestId } from "./log.js";
 import { buildAuthMiddleware } from "./auth/index.js";
+import { type AuditRecorder, noopAudit } from "./audit.js";
 
 // The conftest tool conventionally reads .rego files materialized from a
 // collection named one of these. First match wins; falls back to no
@@ -31,7 +32,7 @@ export function findPolicyCollection(collections: LoadedCollection[]): LoadedCol
  * constructor + handler registration. Safe to call once per stdio
  * process or per-request in stateless HTTP mode.
  */
-export function buildServer(cfg: LoadedConfig): Server {
+export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit()): Server {
   const server = new Server(
     { name: cfg.server.name, version: cfg.server.version },
     { capabilities: { tools: {} }, instructions: cfg.server.instructions },
@@ -61,6 +62,7 @@ export function buildServer(cfg: LoadedConfig): Server {
     const { name, arguments: args } = req.params;
     return withRequestId(undefined, async () => {
       const start = Date.now();
+      const action = typeof (args as { action?: unknown })?.action === "string" ? (args as { action: string }).action : undefined;
       try {
         let result: unknown;
         if (name === "tool_registry") {
@@ -70,13 +72,34 @@ export function buildServer(cfg: LoadedConfig): Server {
           if (!collection) throw new Error(`unknown tool: ${name}`);
           result = await handleContent(collection, ContentInputSchema.parse(args ?? {}));
         }
-        log("info", "tool.invoked", { tool: name, duration_ms: Date.now() - start });
+        const duration_ms = Date.now() - start;
+        log("info", "tool.invoked", { tool: name, duration_ms });
+        audit.record({
+          request_id: currentRequestId(),
+          principal: currentPrincipal(),
+          tool: name,
+          action,
+          args,
+          ok: true,
+          duration_ms,
+        });
         return {
           content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        log("warn", "tool.failed", { tool: name, duration_ms: Date.now() - start, error: message });
+        const duration_ms = Date.now() - start;
+        log("warn", "tool.failed", { tool: name, duration_ms, error: message });
+        audit.record({
+          request_id: currentRequestId(),
+          principal: currentPrincipal(),
+          tool: name,
+          action,
+          args,
+          ok: false,
+          duration_ms,
+          error: message,
+        });
         return {
           isError: true,
           content: [{ type: "text", text: message }],
@@ -98,11 +121,15 @@ export function buildServer(cfg: LoadedConfig): Server {
  * happened once at process start. The trade-off is no server-pushed
  * notifications across the connection, which we don't use anyway.
  */
-export function buildHttpApp(cfg: LoadedConfig, options: { host?: string; allowedHosts?: string[] } = {}): import("express").Express {
+export function buildHttpApp(
+  cfg: LoadedConfig,
+  options: { host?: string; allowedHosts?: string[]; audit?: AuditRecorder } = {},
+): import("express").Express {
   const app = createMcpExpressApp({
     host: options.host,
     allowedHosts: options.allowedHosts,
   });
+  const audit = options.audit ?? noopAudit();
 
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ status: "ok", transport: "http" });
@@ -113,7 +140,7 @@ export function buildHttpApp(cfg: LoadedConfig, options: { host?: string; allowe
   const authMiddleware = buildAuthMiddleware(cfg.auth);
 
   app.post("/mcp", authMiddleware, async (req, res) => {
-    const server = buildServer(cfg);
+    const server = buildServer(cfg, audit);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try {
       await server.connect(transport);

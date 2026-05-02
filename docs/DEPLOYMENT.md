@@ -294,9 +294,15 @@ curl -sN -X POST localhost:8080/mcp \
   for active sessions. Lambda pricing is similar; the bigger
   consideration is that Lambda reconnects every 15 min for long-lived
   streaming responses.
-- **Audit log**: structured JSON to stderr → Cloud Logging /
-  CloudWatch natively. No special config needed; both platforms tail
-  stdio.
+- **Audit log**: two layers ship.
+  1. Structured JSON-line logs to stderr → Cloud Logging / CloudWatch
+     natively. Every `tool.invoked` / `tool.failed` event carries
+     `request_id` + (if auth is on) `principal`. No special config.
+  2. Optional durable JSONL via `audit_log: <path>` in the config.
+     One redacted line per `tools/call` with args **hashed** (sha256,
+     16 hex chars), not logged verbatim — safe to tail to a shared
+     volume / GCS bucket / S3 prefix. Mount the path in the
+     container; rotate externally (`logrotate`, daily rolls, etc.).
 - **Token rotation**: `SECURITY_REPO_TOKEN` is a fine-grained PAT. For
   long-lived deploys, swap to a GitHub App installation token (~50
   lines in `src/sources/github.ts` to use `octokit` with app auth).

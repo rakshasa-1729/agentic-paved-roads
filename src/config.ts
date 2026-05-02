@@ -8,6 +8,7 @@ import { FileSource } from "./sources/file.js";
 import { HttpSource } from "./sources/http.js";
 import { McpResourceSource, McpToolSource } from "./sources/mcp.js";
 import { GitHubSource } from "./sources/github.js";
+import { OpaBundleSource } from "./sources/opa-bundle.js";
 import { InlineToolSource } from "./sources/command.js";
 import { log } from "./log.js";
 
@@ -54,7 +55,17 @@ const GitHubSrc = z.object({
   timeout_ms: z.number().int().positive().optional(),
 });
 
-const ContentSource = z.discriminatedUnion("type", [FileSrc, HttpSrc, McpSrc, GitHubSrc]);
+const OpaBundleSrc = z.object({
+  type: z.literal("opa-bundle"),
+  name: z.string().optional(),
+  url: z.string().url(),
+  headers: z.record(z.string()).optional(),
+  patterns: z.array(z.string()).optional(),
+  timeout_ms: z.number().int().positive().optional(),
+  refresh_ttl_ms: z.number().int().positive().optional(),
+});
+
+const ContentSource = z.discriminatedUnion("type", [FileSrc, HttpSrc, McpSrc, GitHubSrc, OpaBundleSrc]);
 
 const InlineCommandTool = z.object({
   type: z.literal("command"),
@@ -135,6 +146,8 @@ const ConfigSchema = z.object({
   collections: z.array(Collection).default([]),
   tools: ToolsCategory.default({ registry: [], sources: [] }),
   auth: AuthConfig.default({ mode: "none" }),
+  /** Path to a JSONL file. One redacted line per tools/call. */
+  audit_log: z.string().optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -160,6 +173,7 @@ export interface LoadedConfig {
   collections: LoadedCollection[];
   tools: LoadedToolsCategory;
   auth: AuthConfigType;
+  auditLogPath?: string;
 }
 
 /**
@@ -247,6 +261,7 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
       if (s.type === "file") return new FileSource({ ...s, path: resolvePath(s.path) });
       if (s.type === "http") return new HttpSource(s);
       if (s.type === "github") return new GitHubSource(s);
+      if (s.type === "opa-bundle") return new OpaBundleSource(s);
       return new McpResourceSource(s);
     }),
   });
@@ -282,5 +297,6 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
       mcpSources: cfg.tools.sources.map((s) => new McpToolSource(s)),
     },
     auth: cfg.auth,
+    auditLogPath: cfg.audit_log ? resolvePath(cfg.audit_log) : undefined,
   };
 }

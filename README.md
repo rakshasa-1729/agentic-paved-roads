@@ -168,6 +168,9 @@ collections:
         path:  policies
         patterns: ["**/*.md", "**/*.rego"]
         token: "${SECURITY_REPO_TOKEN}"
+      - type: opa-bundle              # signed/built OPA bundle from a registry
+        url: https://ghcr.io/your-org/security-policies/-/blobs/sha256:abc123
+        headers: { Authorization: "Bearer ${SECURITY_REPO_TOKEN}" }
       - type: mcp
         command: npx
         args: ["-y", "@your-org/policy-mcp"]
@@ -186,6 +189,12 @@ collections:
     description: Operational runbooks the agent should consult before incident steps.
     sources:
       - { type: github, owner: your-org, repo: runbooks, path: ., patterns: ["**/*.md"], token: "${SECURITY_REPO_TOKEN}" }
+
+# Optional: durable, redacted audit trail. One JSONL line per
+# tools/call with {ts, request_id, principal, tool, action, args_hash,
+# ok, duration_ms, error?}. Args are sha256-hashed (16 hex chars), not
+# logged verbatim, so per-call tokens / PII don't leak to disk.
+audit_log: ./audit.jsonl
 
 tools:
   registry:
