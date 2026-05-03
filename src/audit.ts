@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { log } from "./log.js";
+import { auditWrites } from "./metrics.js";
 
 export interface AuditEntry {
   request_id?: string;
@@ -33,6 +34,7 @@ class FileAuditRecorder implements AuditRecorder {
       // Don't crash the server on audit write errors — log and keep
       // serving. The operator's monitoring should pick up the warn.
       log("warn", "audit.write_error", { error: err.message, path });
+      auditWrites.inc({ ok: "false" });
     });
   }
 
@@ -51,6 +53,7 @@ class FileAuditRecorder implements AuditRecorder {
     const compact: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(record)) if (v !== undefined) compact[k] = v;
     this.writer.write(JSON.stringify(compact) + "\n");
+    auditWrites.inc({ ok: "true" });
   }
 
   close(): Promise<void> {

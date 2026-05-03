@@ -121,6 +121,16 @@ async function serveStdio(
   const server = buildServer(cfg, audit);
   await server.connect(new StdioServerTransport());
   logStarted(cfg, materialized, policiesCacheDir, "stdio", configPath);
+  installSignalHandlers({
+    label: "stdio",
+    drain: async () => {
+      // stdio is single-session; nothing to drain. Just close the
+      // server (and pending audit writes via audit.close in the
+      // shared handler).
+      await server.close().catch(() => undefined);
+    },
+    audit,
+  });
 }
 
 async function serveHttp(
@@ -138,10 +148,59 @@ async function serveHttp(
     audit,
   });
 
-  await new Promise<void>((resolve) => {
-    app.listen(port, host, () => {
+  const httpServer = await new Promise<import("node:http").Server>((resolve) => {
+    const s = app.listen(port, host, () => {
       logStarted(cfg, materialized, policiesCacheDir, `http :${port}`, configPath);
-      resolve();
+      resolve(s);
     });
   });
+
+  installSignalHandlers({
+    label: `http :${port}`,
+    drain: async () => {
+      // server.close() stops accepting new connections + waits for
+      // in-flight requests to finish. We give them a hard 30s budget
+      // so a stuck handler can't block the shutdown forever.
+      await Promise.race([
+        new Promise<void>((resolve) => httpServer.close(() => resolve())),
+        new Promise<void>((resolve) => setTimeout(resolve, 30_000)),
+      ]);
+    },
+    audit,
+  });
+}
+
+/**
+ * Install SIGTERM / SIGINT handlers that drain the active transport
+ * and flush the audit log before exiting. Idempotent — a second signal
+ * during shutdown forces an immediate exit so a stuck drain can't trap
+ * an operator pressing ^C twice.
+ */
+function installSignalHandlers(opts: {
+  label: string;
+  drain: () => Promise<void>;
+  audit: AuditRecorder;
+}): void {
+  let shuttingDown = false;
+  const handle = (sig: NodeJS.Signals): void => {
+    if (shuttingDown) {
+      log("warn", "server.shutdown_forced", { signal: sig, transport: opts.label });
+      process.exit(1);
+    }
+    shuttingDown = true;
+    log("info", "server.shutting_down", { signal: sig, transport: opts.label });
+    void (async () => {
+      try {
+        await opts.drain();
+        await opts.audit.close();
+        log("info", "server.shutdown_complete", { transport: opts.label });
+        process.exit(0);
+      } catch (err) {
+        log("error", "server.shutdown_error", { error: err instanceof Error ? err.message : String(err) });
+        process.exit(1);
+      }
+    })();
+  };
+  process.on("SIGTERM", handle);
+  process.on("SIGINT", handle);
 }

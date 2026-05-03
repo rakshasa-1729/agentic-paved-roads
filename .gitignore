@@ -6,3 +6,4 @@ dist/
 .env.local
 security.config.local.yaml
 .claude
+.cursor/

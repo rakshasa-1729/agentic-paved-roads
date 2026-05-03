@@ -294,6 +294,24 @@ curl -sN -X POST localhost:8080/mcp \
   for active sessions. Lambda pricing is similar; the bigger
   consideration is that Lambda reconnects every 15 min for long-lived
   streaming responses.
+- **Metrics**: `GET /metrics` returns Prometheus text-format. Counters
+  on `tool_invocations_total{tool, ok}`, `http_requests_total{status_class}`,
+  `audit_writes_total{ok}`; histogram on `tool_duration_ms{tool, ok}`;
+  default Node metrics (CPU, RSS, GC, event-loop lag) under the
+  `security_mcp_` prefix. Scrape from your monitoring stack — no
+  additional config needed.
+- **Tracing**: spans named `mcp.tool.call` with `mcp.tool` /
+  `mcp.action` attributes are emitted via the OpenTelemetry API.
+  Bring your own SDK to actually export them — the standard pattern
+  is `NODE_OPTIONS="--require ./otel-init.js"` registering a
+  NodeTracerProvider with an OTLP exporter pointed at Tempo /
+  Honeycomb / Datadog / Jaeger. Without an SDK the spans are
+  discarded by the no-op tracer (negligible cost).
+- **Graceful shutdown**: SIGTERM / SIGINT drain in-flight `/mcp`
+  requests (30 s budget), flush the audit log, then exit 0. A second
+  signal during shutdown forces an immediate exit. Containers stopped
+  by Cloud Run / Kubernetes finish their current requests instead of
+  dropping connections mid-handshake.
 - **Audit log**: two layers ship.
   1. Structured JSON-line logs to stderr → Cloud Logging / CloudWatch
      natively. Every `tool.invoked` / `tool.failed` event carries

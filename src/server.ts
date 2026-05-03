@@ -9,6 +9,8 @@ import { handleToolRegistry, toolRegistryJsonSchema, ToolRegistryInputSchema } f
 import { currentPrincipal, log, withRequestId, currentRequestId } from "./log.js";
 import { buildAuthMiddleware } from "./auth/index.js";
 import { type AuditRecorder, noopAudit } from "./audit.js";
+import { httpRequests, renderMetrics, toolDuration, toolInvocations } from "./metrics.js";
+import { withSpan } from "./tracing.js";
 
 // The conftest tool conventionally reads .rego files materialized from a
 // collection named one of these. First match wins; falls back to no
@@ -63,6 +65,7 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
     return withRequestId(undefined, async () => {
       const start = Date.now();
       const action = typeof (args as { action?: unknown })?.action === "string" ? (args as { action: string }).action : undefined;
+      return withSpan("mcp.tool.call", { "mcp.tool": name, "mcp.action": action }, async () => {
       try {
         let result: unknown;
         if (name === "tool_registry") {
@@ -74,6 +77,8 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
         }
         const duration_ms = Date.now() - start;
         log("info", "tool.invoked", { tool: name, duration_ms });
+        toolInvocations.inc({ tool: name, ok: "true" });
+        toolDuration.observe({ tool: name, ok: "true" }, duration_ms);
         audit.record({
           request_id: currentRequestId(),
           principal: currentPrincipal(),
@@ -90,6 +95,8 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
         const message = err instanceof Error ? err.message : String(err);
         const duration_ms = Date.now() - start;
         log("warn", "tool.failed", { tool: name, duration_ms, error: message });
+        toolInvocations.inc({ tool: name, ok: "false" });
+        toolDuration.observe({ tool: name, ok: "false" }, duration_ms);
         audit.record({
           request_id: currentRequestId(),
           principal: currentPrincipal(),
@@ -105,6 +112,7 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
           content: [{ type: "text", text: message }],
         };
       }
+      });
     });
   });
 
@@ -135,6 +143,11 @@ export function buildHttpApp(
     res.status(200).json({ status: "ok", transport: "http" });
   });
 
+  app.get("/metrics", async (_req, res) => {
+    res.setHeader("content-type", "text/plain; version=0.0.4; charset=utf-8");
+    res.status(200).send(await renderMetrics());
+  });
+
   // Auth runs only on /mcp. /healthz stays open so liveness probes
   // and load-balancer health checks don't need credentials.
   const authMiddleware = buildAuthMiddleware(cfg.auth);
@@ -142,6 +155,7 @@ export function buildHttpApp(
   app.post("/mcp", authMiddleware, async (req, res) => {
     const server = buildServer(cfg, audit);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("finish", () => httpRequests.inc({ status_class: `${Math.floor(res.statusCode / 100)}xx` }));
     try {
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
