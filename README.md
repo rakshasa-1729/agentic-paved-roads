@@ -46,11 +46,21 @@ npx security-mcp init               # writes ./security.config.yaml from the sec
 npx security-mcp validate           # parses + probes every source
 npx security-mcp doctor             # environment diagnostics
 npx security-mcp inspect            # list / describe / invoke tools in-process
+npx security-mcp schema             # emit the config's JSON Schema
+npx security-mcp lint <repo-path>   # validate a content repo against conventions
 npx security-mcp serve              # run the server (stdio)
 ```
 
-`init`, `validate`, `doctor`, `inspect`, and `serve` each accept
-`--help`. Pass `--preset empty` to `init` for a non-security starter.
+Every subcommand accepts `--help`. Pass `--preset empty` to `init` for
+a non-security starter.
+
+For VS Code / Cursor autocomplete on `security.config.yaml`:
+
+```bash
+npx security-mcp schema --out ./.security-mcp.schema.json
+# then in .vscode/settings.json:
+#   "yaml.schemas": { "./.security-mcp.schema.json": "security.config*.yaml" }
+```
 
 `serve` accepts flag overrides for ad-hoc invocation:
 

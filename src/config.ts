@@ -129,7 +129,7 @@ const InlineHttpTool = z.object({
   timeout_ms: z.number().int().positive().optional(),
 });
 
-const InlineTool = z.discriminatedUnion("type", [InlineCommandTool, InlineHttpTool]);
+export const InlineTool = z.discriminatedUnion("type", [InlineCommandTool, InlineHttpTool]);
 
 const Collection = z.object({
   name: z
@@ -177,7 +177,7 @@ const AuthOidc = z.object({
 const AuthConfig = z.discriminatedUnion("mode", [AuthNone, AuthIap, AuthOidc]);
 export type AuthConfigType = z.infer<typeof AuthConfig>;
 
-const ConfigSchema = z.object({
+export const ConfigSchema = z.object({
   server: ServerInfo.default({}),
   collections: z.array(Collection).default([]),
   tools: ToolsCategory.default({ registry: [], sources: [] }),

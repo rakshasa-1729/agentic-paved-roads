@@ -11,6 +11,8 @@ Commands:
   validate    Parse a config and probe each source.
   doctor      Print environment diagnostics.
   inspect     Connect in-process and list / describe / invoke tools.
+  schema      Emit the config's JSON Schema (for editor autocomplete).
+  lint        Validate a content repo against publisher conventions.
 
 Pass -h / --help to any command for its options.
 
@@ -34,6 +36,10 @@ async function loadCommand(name: string): Promise<CmdRunner> {
       return (await import("./cli/doctor.js")).run;
     case "inspect":
       return (await import("./cli/inspect.js")).run;
+    case "schema":
+      return (await import("./cli/schema.js")).run;
+    case "lint":
+      return (await import("./cli/lint.js")).run;
     default:
       throw new Error(`unknown command: ${name}`);
   }
