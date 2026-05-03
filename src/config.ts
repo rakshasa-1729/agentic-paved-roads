@@ -8,7 +8,9 @@ import { FileSource } from "./sources/file.js";
 import { HttpSource } from "./sources/http.js";
 import { McpResourceSource, McpToolSource } from "./sources/mcp.js";
 import { GitHubSource } from "./sources/github.js";
+import { GitLabSource } from "./sources/gitlab.js";
 import { OpaBundleSource } from "./sources/opa-bundle.js";
+import { LocalCmdSource } from "./sources/local-cmd.js";
 import { InlineToolSource } from "./sources/command.js";
 import { log } from "./log.js";
 
@@ -65,7 +67,41 @@ const OpaBundleSrc = z.object({
   refresh_ttl_ms: z.number().int().positive().optional(),
 });
 
-const ContentSource = z.discriminatedUnion("type", [FileSrc, HttpSrc, McpSrc, GitHubSrc, OpaBundleSrc]);
+const GitLabSrc = z.object({
+  type: z.literal("gitlab"),
+  name: z.string().optional(),
+  project: z.string(),
+  ref: z.string().optional(),
+  path: z.string().optional(),
+  patterns: z.array(z.string()).optional(),
+  token: z.string().optional(),
+  api_base_url: z.string().optional(),
+  timeout_ms: z.number().int().positive().optional(),
+});
+
+const LocalCmdSrc = z.object({
+  type: z.literal("local-cmd"),
+  name: z.string().optional(),
+  list_command: z.string(),
+  list_args: z.array(z.string()).optional(),
+  get_command: z.string(),
+  get_args: z.array(z.string()).optional(),
+  format: z.enum(["lines", "json"]).optional(),
+  cwd: z.string().optional(),
+  env: z.record(z.string()).optional(),
+  timeout_ms: z.number().int().positive().optional(),
+  output_max_bytes: z.number().int().positive().optional(),
+});
+
+const ContentSource = z.discriminatedUnion("type", [
+  FileSrc,
+  HttpSrc,
+  McpSrc,
+  GitHubSrc,
+  OpaBundleSrc,
+  GitLabSrc,
+  LocalCmdSrc,
+]);
 
 const InlineCommandTool = z.object({
   type: z.literal("command"),
@@ -261,7 +297,9 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
       if (s.type === "file") return new FileSource({ ...s, path: resolvePath(s.path) });
       if (s.type === "http") return new HttpSource(s);
       if (s.type === "github") return new GitHubSource(s);
+      if (s.type === "gitlab") return new GitLabSource(s);
       if (s.type === "opa-bundle") return new OpaBundleSource(s);
+      if (s.type === "local-cmd") return new LocalCmdSource(s);
       return new McpResourceSource(s);
     }),
   });
