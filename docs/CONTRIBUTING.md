@@ -42,3 +42,21 @@ Include the security-mcp version (`git rev-parse HEAD`), Node version,
 the relevant config snippet, and the failure mode. For agent-side
 issues (Cursor/Claude Code/etc. not seeing the tools) include the host
 config too.
+
+## Versioning
+
+The project follows [Semantic Versioning](https://semver.org/) and
+[Conventional Commits](https://www.conventionalcommits.org/):
+
+- `fix:` → patch
+- `feat:` → minor
+- `BREAKING CHANGE:` footer or `!` after the scope → major
+
+Releases are automated by [release-please](https://github.com/google/github-actions/release-please-action).
+When a release is created, the `Release` workflow also publishes to npm
+(with provenance). To trigger a release, merge the release-please bot's
+PR — it groups conventional commits since the last tag and bumps
+`package.json` + `CHANGELOG.md` automatically.
+
+No manual version bumping or CHANGELOG editing is needed for day-to-day
+PRs.

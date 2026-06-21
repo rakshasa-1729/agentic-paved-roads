@@ -33,3 +33,17 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Audit production deps (high+ severity)
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true

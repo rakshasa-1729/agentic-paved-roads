@@ -35,9 +35,11 @@ ENV NODE_ENV=production \
 
 # conftest — bundled so tool_registry(invoke, name=conftest, …) works
 # without needing it on the host. Users who don't need conftest can pass a
-# different config and ignore it.
-ARG CONFTEST_VERSION=0.56.0
-RUN apt-get update \
+# different config and ignore it. Version is read from .conftest-version
+# (single source of truth for the whole repo).
+COPY .conftest-version .conftest-version
+RUN CONFTEST_VERSION="$(cat .conftest-version)" \
+ && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && case "$(dpkg --print-architecture)" in \
       arm64) CONFTEST_ARCH=arm64 ;; \

@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible issue
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Steps to reproduce + expected vs actual behavior.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: security-mcp version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      placeholder: "20.x"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      render: shell

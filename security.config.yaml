@@ -48,7 +48,8 @@ collections:
               # macOS
               brew install conftest
               # Linux (or any host without brew)
-              curl -fsSL "https://github.com/open-policy-agent/conftest/releases/download/v0.56.0/conftest_0.56.0_$(uname -s)_$(uname -m | sed 's/aarch64/arm64/;s/amd64/x86_64/').tar.gz" \
+              CONFTEST_VERSION=0.56.0
+              curl -fsSL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_$(uname -s)_$(uname -m | sed 's/aarch64/arm64/;s/amd64/x86_64/').tar.gz" \
                 | sudo tar -xz -C /usr/local/bin conftest
               # Then run, with policies sourced from a sibling clone of
               # the security repo (preferred) or a tmp dir populated via

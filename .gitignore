@@ -7,3 +7,5 @@ dist/
 security.config.local.yaml
 .claude
 .cursor/
+coverage/
+*.tsbuildinfo

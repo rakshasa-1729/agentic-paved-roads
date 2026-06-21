@@ -8,5 +8,16 @@ export default defineConfig({
     testTimeout: 5000,
     clearMocks: true,
     setupFiles: ["./tests/setup.ts"],
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      exclude: ["src/index.ts", "src/sources/types.ts"],
+      thresholds: {
+        lines: 80,
+        branches: 74,
+        functions: 85,
+        statements: 80,
+      },
+    },
   },
 });

@@ -3,7 +3,7 @@
 //
 // What you get:
 //   - Node 20 + npm + tsx
-//   - conftest 0.56 on PATH (baked in via the Dockerfile)
+//   - conftest 0.56.0 on PATH (version pinned in .conftest-version) (baked in via the Dockerfile)
 //   - gh CLI (for the gh-auth-token fallback path tests + day-to-day)
 //   - Docker-in-Docker so you can build/run the security-mcp image
 //   - Port 8080 forwarded for HTTP-mode smoke tests

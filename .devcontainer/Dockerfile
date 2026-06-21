@@ -6,8 +6,9 @@
 # postCreateCommand wait).
 FROM mcr.microsoft.com/devcontainers/typescript-node:20
 
-ARG CONFTEST_VERSION=0.56.0
+COPY .conftest-version .conftest-version
 RUN set -eux; \
+    CONFTEST_VERSION="$(cat .conftest-version)"; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
       arm64) conftest_arch=arm64 ;; \
