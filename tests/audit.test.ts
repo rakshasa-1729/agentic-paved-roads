@@ -87,6 +87,42 @@ describe("audit log", () => {
     expect(raw).toMatch(/"args_hash":"[0-9a-f]{16}"/);
   });
 
+  it("records full args when recordArgs is true (for regulated environments)", async () => {
+    const path = join(tmp, "audit.jsonl");
+    recorder = openAuditLog(path, { recordArgs: true });
+    recorder.record({
+      tool: "exception_tool",
+      args: { policy_id: "AWS-001", justification: "approved by sec team" },
+      ok: true,
+      duration_ms: 1,
+    });
+    await flush(path);
+
+    const lines = readLines(path);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].args).toEqual({ policy_id: "AWS-001", justification: "approved by sec team" });
+    // The hash is still present alongside full args for correlation
+    expect(lines[0].args_hash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("records auth_mode and response_bytes when provided", async () => {
+    const path = join(tmp, "audit.jsonl");
+    recorder = openAuditLog(path);
+    recorder.record({
+      tool: "policy_tool",
+      args: { action: "list" },
+      ok: true,
+      duration_ms: 5,
+      auth_mode: "oidc",
+      response_bytes: 4096,
+    });
+    await flush(path);
+
+    const lines = readLines(path);
+    expect(lines[0].auth_mode).toBe("oidc");
+    expect(lines[0].response_bytes).toBe(4096);
+  });
+
   it("hashes equivalent args to the same digest regardless of key order", async () => {
     const path = join(tmp, "audit.jsonl");
     recorder = openAuditLog(path);

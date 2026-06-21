@@ -45,6 +45,13 @@ export const auditWrites = new Counter({
   ...labels(["ok"]),
 });
 
+export const authAttempts = new Counter({
+  name: "security_mcp_auth_attempts_total",
+  help: "Authentication attempts on /mcp, partitioned by auth mode and outcome.",
+  registers: [registry],
+  ...labels(["mode", "ok"]),
+});
+
 /** Render the registry in the Prometheus text exposition format. */
 export async function renderMetrics(): Promise<string> {
   return registry.metrics();

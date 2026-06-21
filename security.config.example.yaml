@@ -123,3 +123,38 @@ tools:
   #     name: kubectl-mcp
   #     command: npx
   #     args: ["-y", "@your-org/kubectl-mcp"]
+
+# ─── Auth ───────────────────────────────────────────────────────────
+# Pick one mode. The principal extracted is recorded on every audit
+# log line.
+#
+# auth:
+#   mode: iap                        # trusted reverse-proxy header
+#   trusted_header: X-Goog-Authenticated-User-Email
+#
+# auth:
+#   mode: oidc                        # Bearer JWT (Verify issuer + audience)
+#   issuer: https://accounts.google.com
+#   audience: <project-number>-<hash>.apps.googleusercontent.com
+#
+# auth:
+#   mode: api_key                    # static key (constant-time compare)
+#   header_name: X-API-Key           # default; omit to use default
+#   keys_env: SECURITY_MCP_API_KEYS   # default; env var with comma-separated
+#                                     #   key:principal pairs (or bare keys)
+#
+# auth:
+#   mode: none                       # dev / closed network only
+
+# ─── Metrics endpoint protection ───────────────────────────────────
+# metrics_protect: true              # /metrics requires auth when mode≠none
+
+# ─── Audit depth ────────────────────────────────────────────────────
+# audit_record_args: false           # log full args (in addition to hash)
+
+# ─── Per-tool RBAC (optional) ──────────────────────────────────────
+# rbac:
+#   default_allow: false             # deny unlisted principals by default
+#   rules:
+#     alice@example.com: [policy_tool, tool_registry]
+#     ci-bot: ["*"]                  # wildcard — all tools

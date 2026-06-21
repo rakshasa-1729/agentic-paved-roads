@@ -86,4 +86,15 @@ describe("/metrics endpoint", () => {
     expect(body).toMatch(/security_mcp_tool_invocations_total\{tool="tool_registry",ok="true"\} 1/);
     expect(body).toMatch(/security_mcp_tool_duration_ms_count\{tool="tool_registry",ok="true"\} 1/);
   });
+
+  it("counts auth_attempts by mode and outcome", async () => {
+    await rpc({
+      jsonrpc: "2.0",
+      id: 0,
+      method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    });
+    const body = await fetch(`${baseUrl}/metrics`).then((r) => r.text());
+    expect(body).toMatch(/security_mcp_auth_attempts_total\{mode="none",ok="true"\} 1/);
+  });
 });

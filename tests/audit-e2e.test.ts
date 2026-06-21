@@ -102,9 +102,14 @@ describe("audit log E2E", () => {
     expect(last.tool).toBe("policy_tool");
     expect(last.action).toBe("list");
     expect(last.principal).toBe("audit@example.com");
+    expect(last.auth_mode).toBe("iap");
     expect(last.ok).toBe(true);
     expect(typeof last.duration_ms).toBe("number");
+    expect(typeof last.response_bytes).toBe("number");
+    expect(last.response_bytes as number).toBeGreaterThan(0);
     expect(last.args_hash).toMatch(/^[0-9a-f]{16}$/);
     expect(last.request_id).toMatch(/^[0-9a-f-]{36}$/);
+    // args should NOT be present by default (only the hash)
+    expect(last).not.toHaveProperty("args");
   });
 });

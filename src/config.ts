@@ -172,6 +172,8 @@ const ServerInfo = z.object({
 // (safe for stdio, intended for behind a closed network or already-
 // authenticated edge proxy). `iap` trusts a configured platform header.
 // `oidc` verifies a Bearer JWT against a configured issuer + audience.
+// `api_key` validates a shared secret from a configured header against
+// a list of keys supplied via an environment variable.
 const AuthNone = z.object({ mode: z.literal("none") });
 const AuthIap = z.object({
   mode: z.literal("iap"),
@@ -183,7 +185,12 @@ const AuthOidc = z.object({
   audience: z.union([z.string(), z.array(z.string())]),
   jwks_uri: z.string().url().optional(),
 });
-const AuthConfig = z.discriminatedUnion("mode", [AuthNone, AuthIap, AuthOidc]);
+const AuthApiKey = z.object({
+  mode: z.literal("api_key"),
+  header_name: z.string().default("X-API-Key"),
+  keys_env: z.string().default("SECURITY_MCP_API_KEYS"),
+});
+const AuthConfig = z.discriminatedUnion("mode", [AuthNone, AuthIap, AuthOidc, AuthApiKey]);
 export type AuthConfigType = z.infer<typeof AuthConfig>;
 
 export const ConfigSchema = z.object({
@@ -193,6 +200,23 @@ export const ConfigSchema = z.object({
   auth: AuthConfig.default({ mode: "none" }),
   /** Path to a JSONL file. One redacted line per tools/call. */
   audit_log: z.string().optional(),
+  /** When true, tool-call args are recorded verbatim in the audit log
+   * (in addition to the hash). Default: false — args are hashed only,
+   * preventing sensitive input from leaking into the audit trail. */
+  audit_record_args: z.boolean().default(false),
+  metrics_protect: z.boolean().default(true),
+  /** RBAC: restrict which tools a principal can call. When absent,
+   * all tools are available to all principals. When present, each
+   * principal is looked up in `rules`; their listed tools (or `*`)
+   * are allowed. Principals not in `rules` fall through to
+   * `default_allow`. Securing by default: `default_allow` is false
+   * (deny unlisted principals) unless overridden. */
+  rbac: z
+    .object({
+      default_allow: z.boolean().default(false),
+      rules: z.record(z.array(z.string())).default({}),
+    })
+    .optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -220,6 +244,9 @@ export interface LoadedConfig {
   tools: LoadedToolsCategory;
   auth: AuthConfigType;
   auditLogPath?: string;
+  auditRecordArgs?: boolean;
+  metrics_protect?: boolean;
+  rbac?: { default_allow: boolean; rules: Record<string, string[]> };
 }
 
 /**
@@ -347,5 +374,8 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     },
     auth: cfg.auth,
     auditLogPath: cfg.audit_log ? resolvePath(cfg.audit_log) : undefined,
+    auditRecordArgs: cfg.audit_record_args,
+    metrics_protect: cfg.metrics_protect,
+    rbac: cfg.rbac ? { default_allow: cfg.rbac.default_allow, rules: cfg.rbac.rules } : undefined,
   };
 }

@@ -374,6 +374,7 @@ src/
     index.ts            # buildAuthMiddleware dispatch + JSON-RPC 401
     iap.ts              # trusted-header auth (e.g. Cloud IAP)
     oidc.ts             # Bearer JWT verification (issuer + audience, JWKS discovery)
+    api_key.ts          # static key auth (constant-time, header-configurable)
   util/
     env.ts              # ${ENV_VAR} interpolation
     timeout.ts          # abortableFetch + withTimeout helpers

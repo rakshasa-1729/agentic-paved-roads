@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
 import { log, withPrincipal } from "../log.js";
 import { reject } from "./index.js";
+import { authAttempts } from "../metrics.js";
 
 interface OidcConfig {
   mode: "oidc";
@@ -29,6 +30,7 @@ export function oidcMiddleware(cfg: OidcConfig): RequestHandler {
     const auth = req.headers.authorization;
     if (!auth || !auth.toLowerCase().startsWith("bearer ")) {
       log("warn", "auth.rejected", { mode: "oidc", reason: "missing_bearer" });
+      authAttempts.inc({ mode: "oidc", ok: "false" });
       reject(res, "missing or malformed Authorization: Bearer header");
       return;
     }
@@ -39,12 +41,14 @@ export function oidcMiddleware(cfg: OidcConfig): RequestHandler {
         audience: cfg.audience,
       });
       const principal = principalFrom(payload);
+      authAttempts.inc({ mode: "oidc", ok: "true" });
       withPrincipal(principal, () => next());
     } catch (err) {
       // jose error codes: ERR_JWS_SIGNATURE_VERIFICATION_FAILED,
       // ERR_JWT_EXPIRED, ERR_JWT_CLAIM_VALIDATION_FAILED, …
       const code = (err as { code?: string }).code ?? "unknown";
       log("warn", "auth.rejected", { mode: "oidc", reason: "verify_failed", code });
+      authAttempts.inc({ mode: "oidc", ok: "false" });
       reject(res, "invalid token");
     }
   };

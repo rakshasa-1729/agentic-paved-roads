@@ -84,7 +84,7 @@ export async function run(argv: string[]): Promise<number> {
   const configPath = opts.configPath ?? defaultConfigPath();
   const cfg = await loadConfig(configPath);
 
-  const audit = openAuditLog(cfg.auditLogPath);
+  const audit = openAuditLog(cfg.auditLogPath, { recordArgs: cfg.auditRecordArgs });
 
   let materialized = 0;
   const policyCollection = findPolicyCollection(cfg.collections);

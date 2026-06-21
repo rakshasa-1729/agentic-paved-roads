@@ -3,17 +3,21 @@ import type { RequestHandler } from "express";
 import type { AuthConfigType } from "../config.js";
 import { iapMiddleware } from "./iap.js";
 import { oidcMiddleware } from "./oidc.js";
+import { apiKeyMiddleware } from "./api_key.js";
+import { authAttempts } from "../metrics.js";
 
 /**
  * Build the express middleware that authenticates incoming /mcp
  * requests. Mode is selected by the `auth.mode` config field:
  *
- *   none — pass-through; no principal recorded.
- *   iap  — trust a configured platform-injected header (default
- *          X-Goog-Authenticated-User-Email). For Cloud Run + IAP, AWS
- *          API Gateway with a Cognito authorizer, etc.
- *   oidc — verify an `Authorization: Bearer <jwt>` against a
- *          configured issuer + audience using a remote JWKS.
+ *   none    — pass-through; no principal recorded.
+ *   iap     — trust a configured platform-injected header (default
+ *             X-Goog-Authenticated-User-Email). For Cloud Run + IAP, AWS
+ *             API Gateway with a Cognito authorizer, etc.
+ *   oidc    — verify an `Authorization: Bearer <jwt>` against a
+ *             configured issuer + audience using a remote JWKS.
+ *   api_key — validate a shared secret from a configured header
+ *             against keys in an environment variable.
  *
  * On success the middleware sets the authenticated principal in
  * AsyncLocalStorage (via withPrincipal) so subsequent log lines and
@@ -24,11 +28,16 @@ import { oidcMiddleware } from "./oidc.js";
 export function buildAuthMiddleware(cfg: AuthConfigType): RequestHandler {
   switch (cfg.mode) {
     case "none":
-      return (_req, _res, next) => next();
+      return (_req, _res, next) => {
+        authAttempts.inc({ mode: "none", ok: "true" });
+        next();
+      };
     case "iap":
       return iapMiddleware(cfg);
     case "oidc":
       return oidcMiddleware(cfg);
+    case "api_key":
+      return apiKeyMiddleware(cfg);
   }
 }
 

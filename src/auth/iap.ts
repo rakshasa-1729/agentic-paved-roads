@@ -2,6 +2,7 @@
 import type { RequestHandler } from "express";
 import { withPrincipal, log } from "../log.js";
 import { reject } from "./index.js";
+import { authAttempts } from "../metrics.js";
 
 interface IapConfig {
   mode: "iap";
@@ -27,12 +28,14 @@ export function iapMiddleware(cfg: IapConfig): RequestHandler {
     const value = Array.isArray(raw) ? raw[0] : raw;
     if (!value) {
       log("warn", "auth.rejected", { mode: "iap", reason: "missing_header", header: cfg.trusted_header });
+      authAttempts.inc({ mode: "iap", ok: "false" });
       reject(res, `missing required header: ${cfg.trusted_header}`);
       return;
     }
     // IAP prefixes the email with "accounts.google.com:" — strip for
     // log readability without losing the namespace info.
     const principal = value.replace(/^accounts\.google\.com:/, "");
+    authAttempts.inc({ mode: "iap", ok: "true" });
     withPrincipal(principal, () => next());
   };
 }

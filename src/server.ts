@@ -30,6 +30,25 @@ export function findPolicyCollection(collections: LoadedCollection[]): LoadedCol
 }
 
 /**
+ * RBAC gate: decide whether `principal` is allowed to call `tool`.
+ *
+ * - When `rbac` is not configured, all tools are allowed (backward compat).
+ * - When `rbac` is configured, look up the principal in `rules`. If listed,
+ *   only their specified tools (or `*`) are allowed. If not listed, fall
+ *   through to `default_allow` (false = deny, true = allow).
+ */
+export function isToolAllowed(
+  rbac: { default_allow: boolean; rules: Record<string, string[]> } | undefined,
+  principal: string | undefined,
+  tool: string,
+): boolean {
+  if (!rbac) return true;
+  const rules = rbac.rules[principal ?? ""];
+  if (rules) return rules.includes("*") || rules.includes(tool);
+  return rbac.default_allow;
+}
+
+/**
  * Build a fully-wired MCP Server from a loaded config. Cheap — just
  * constructor + handler registration. Safe to call once per stdio
  * process or per-request in stateless HTTP mode.
@@ -65,7 +84,25 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
     return withRequestId(undefined, async () => {
       const start = Date.now();
       const action = typeof (args as { action?: unknown })?.action === "string" ? (args as { action: string }).action : undefined;
-      return withSpan("mcp.tool.call", { "mcp.tool": name, "mcp.action": action }, async () => {
+      return withSpan("mcp.tool.call", { "mcp.tool": name, "mcp.action": action, "mcp.auth_mode": cfg.auth.mode, "mcp.principal": currentPrincipal() }, async (span) => {
+      if (!isToolAllowed(cfg.rbac, currentPrincipal(), name)) {
+        const duration_ms = Date.now() - start;
+        const msg = `principal "${currentPrincipal() ?? ""}" is not authorized to call tool "${name}"`;
+        log("warn", "authz.denied", { tool: name, principal: currentPrincipal(), duration_ms });
+        toolInvocations.inc({ tool: name, ok: "false" });
+        audit.record({
+          request_id: currentRequestId(),
+          principal: currentPrincipal(),
+          auth_mode: cfg.auth.mode,
+          tool: name,
+          action,
+          args,
+          ok: false,
+          duration_ms,
+          error: msg,
+        });
+        return { isError: true, content: [{ type: "text", text: msg }] };
+      }
       try {
         let result: unknown;
         if (name === "tool_registry") {
@@ -76,21 +113,23 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
           result = await handleContent(collection, ContentInputSchema.parse(args ?? {}));
         }
         const duration_ms = Date.now() - start;
+        const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+        span.setAttribute("mcp.response_bytes", Buffer.byteLength(text));
         log("info", "tool.invoked", { tool: name, duration_ms });
         toolInvocations.inc({ tool: name, ok: "true" });
         toolDuration.observe({ tool: name, ok: "true" }, duration_ms);
         audit.record({
           request_id: currentRequestId(),
           principal: currentPrincipal(),
+          auth_mode: cfg.auth.mode,
           tool: name,
           action,
           args,
           ok: true,
           duration_ms,
+          response_bytes: Buffer.byteLength(text),
         });
-        return {
-          content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }],
-        };
+        return { content: [{ type: "text", text }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const duration_ms = Date.now() - start;
@@ -100,6 +139,7 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
         audit.record({
           request_id: currentRequestId(),
           principal: currentPrincipal(),
+          auth_mode: cfg.auth.mode,
           tool: name,
           action,
           args,
@@ -107,10 +147,7 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
           duration_ms,
           error: message,
         });
-        return {
-          isError: true,
-          content: [{ type: "text", text: message }],
-        };
+        return { isError: true, content: [{ type: "text", text: message }] };
       }
       });
     });
@@ -143,14 +180,15 @@ export function buildHttpApp(
     res.status(200).json({ status: "ok", transport: "http" });
   });
 
-  app.get("/metrics", async (_req, res) => {
+  // Auth runs on /mcp and (optionally) /metrics. /healthz stays open so
+  // liveness probes and load-balancer health checks don't need credentials.
+  const authMiddleware = buildAuthMiddleware(cfg.auth);
+  const protectMetrics = cfg.auth.mode !== "none" && (cfg.metrics_protect ?? true);
+
+  app.get("/metrics", ...(protectMetrics ? [authMiddleware] : []), async (_req, res) => {
     res.setHeader("content-type", "text/plain; version=0.0.4; charset=utf-8");
     res.status(200).send(await renderMetrics());
   });
-
-  // Auth runs only on /mcp. /healthz stays open so liveness probes
-  // and load-balancer health checks don't need credentials.
-  const authMiddleware = buildAuthMiddleware(cfg.auth);
 
   app.post("/mcp", authMiddleware, async (req, res) => {
     const server = buildServer(cfg, audit);

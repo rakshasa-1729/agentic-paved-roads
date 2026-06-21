@@ -8,12 +8,14 @@ import { auditWrites } from "./metrics.js";
 export interface AuditEntry {
   request_id?: string;
   principal?: string;
+  auth_mode?: string;
   tool: string;
   action?: string;
   args: unknown;
   ok: boolean;
   duration_ms: number;
   error?: string;
+  response_bytes?: number;
 }
 
 /**
@@ -29,7 +31,11 @@ export interface AuditRecorder {
 }
 
 class FileAuditRecorder implements AuditRecorder {
-  constructor(private readonly writer: WriteStream, private readonly path: string) {
+  constructor(
+    private readonly writer: WriteStream,
+    private readonly path: string,
+    private readonly recordArgs: boolean = false,
+  ) {
     writer.on("error", (err) => {
       // Don't crash the server on audit write errors — log and keep
       // serving. The operator's monitoring should pick up the warn.
@@ -39,17 +45,22 @@ class FileAuditRecorder implements AuditRecorder {
   }
 
   record(entry: AuditEntry): void {
-    const record = {
+    const record: Record<string, unknown> = {
       ts: new Date().toISOString(),
       request_id: entry.request_id,
       principal: entry.principal,
+      auth_mode: entry.auth_mode,
       tool: entry.tool,
       action: entry.action,
       args_hash: hashArgs(entry.args),
       ok: entry.ok,
       duration_ms: entry.duration_ms,
       error: entry.error,
+      response_bytes: entry.response_bytes,
     };
+    if (this.recordArgs) {
+      record.args = entry.args;
+    }
     const compact: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(record)) if (v !== undefined) compact[k] = v;
     this.writer.write(JSON.stringify(compact) + "\n");
@@ -76,13 +87,17 @@ export function noopAudit(): AuditRecorder {
  * not exist. Returns a recorder; pass `undefined` for `path` to get a
  * no-op recorder back (so callers don't have to branch on whether
  * auditing is configured).
+ *
+ * When `opts.recordArgs` is true, tool-call arguments are also written
+ * verbatim alongside the hash. The default (false) hashes args to
+ * prevent sensitive input from persisting in the audit trail.
  */
-export function openAuditLog(path?: string): AuditRecorder {
+export function openAuditLog(path?: string, opts?: { recordArgs?: boolean }): AuditRecorder {
   if (!path) return noopAudit();
   const abs = resolve(path);
   mkdirSync(dirname(abs), { recursive: true });
   const writer = createWriteStream(abs, { flags: "a" });
-  return new FileAuditRecorder(writer, abs);
+  return new FileAuditRecorder(writer, abs, opts?.recordArgs);
 }
 
 function hashArgs(args: unknown): string {

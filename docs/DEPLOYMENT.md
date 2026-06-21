@@ -47,7 +47,7 @@ Lambda / any other reverse-proxied target front. See
                   └──────────────────────┘                   └──────────────────────┘
 ```
 
-**Auth boundary**: pick where authentication happens. Three modes
+**Auth boundary**: pick where authentication happens. Four modes
 ship out of the box, selected by the `auth.mode` config field:
 
 - `iap` — the platform fronting the MCP (IAP on Cloud Run, an API
@@ -61,10 +61,21 @@ ship out of the box, selected by the `auth.mode` config field:
   a configured issuer + audience using a remote JWKS. Bring your own
   IdP (Google, Okta, Cognito, internal). The principal is `email`,
   falling back to `preferred_username`, falling back to `sub`.
+- `api_key` — static key authentication via a configurable header
+  (default `X-API-Key`). Keys are read from an env var (default
+  `SECURITY_MCP_API_KEYS`) as a comma-separated list of `key:principal`
+  pairs (bare keys use the key itself as the principal). Constant-time
+  comparison; no network calls. Good for service-to-service or CI bot
+  scenarios where a full IdP is overkill.
 - `none` — no auth (development / behind a closed network only).
 
 Whichever mode you pick, the authenticated principal is recorded on
 every `tool.invoked` audit log line.
+
+**Metrics endpoint**: by default, when auth is enabled (`mode ≠ none`),
+the `/metrics` endpoint requires the same authentication. Set
+`metrics_protect: false` to expose `/metrics` without auth (useful when
+a scrape proxy handles its own ACL).
 
 ---
 
@@ -214,6 +225,7 @@ typical MCP sessions but long-lived connections will reconnect.
 | IAM SigV4 (Function URL)           | n/a       | ✅     | The platform handles auth; MCP runs in `iap` mode trusting an IAM-injected header. |
 | Cognito (Function URL)             | n/a       | ✅     | Either IAP-style (Cognito injects a header) or `oidc` mode against the user pool's issuer. |
 | OIDC bearer (any provider)         | ✅        | ✅     | `auth: { mode: oidc, issuer: https://accounts.google.com, audience: <aud> }` |
+| API key (static, constant-time)    | ✅        | ✅     | `auth: { mode: api_key, header_name: X-API-Key, keys_env: SECURITY_MCP_API_KEYS }` |
 | None (dev only)                    | ⚠         | ⚠      | `auth: { mode: none }`. Don't put this in front of anyone real. |
 
 **Sample OIDC config** (Google as IdP, devs use `gcloud auth print-identity-token`):
@@ -230,6 +242,36 @@ auth:
 The principal extracted from a verified token is `email`, falling back
 to `preferred_username`, falling back to `sub`. It appears as the
 `principal` field on every `tool.invoked` log line.
+
+**Sample API-key config** (service-to-service or CI bot):
+
+```yaml
+auth:
+  mode: api_key
+  header_name: X-API-Key       # default; omit to use the default
+  keys_env: SECURITY_MCP_API_KEYS  # default; omit to use the default
+# Set the env var to a comma-separated list of key:principal pairs:
+#   SECURITY_MCP_API_KEYS=abc123:ci-bot,def456:nightly-job
+# Bare keys (no colon) use the key itself as the principal:
+#   SECURITY_MCP_API_KEYS=abc123
+```
+
+**Per-tool RBAC (optional)**: restrict which tools each principal may
+call. Add an `rbac` section to the config:
+
+```yaml
+rbac:
+  default_allow: false          # deny unknown principals by default
+  rules:
+    alice@example.com: [policy_tool, tool_registry]
+    ci-bot: ["*"]               # wildcard — all tools
+```
+
+Authorization is checked after authentication on every `tools/call`.
+Denied calls return MCP `isError: true` with a "not authorized" message,
+increment `tool_invocations_total{ok="false"}`, and emit an
+`authz.denied` log line. When RBAC is not configured, all authenticated
+principals may call all tools.
 
 ---
 
@@ -296,13 +338,16 @@ curl -sN -X POST localhost:8080/mcp \
   streaming responses.
 - **Metrics**: `GET /metrics` returns Prometheus text-format. Counters
   on `tool_invocations_total{tool, ok}`, `http_requests_total{status_class}`,
-  `audit_writes_total{ok}`; histogram on `tool_duration_ms{tool, ok}`;
-  default Node metrics (CPU, RSS, GC, event-loop lag) under the
-  `security_mcp_` prefix. Scrape from your monitoring stack — no
-  additional config needed.
-- **Tracing**: spans named `mcp.tool.call` with `mcp.tool` /
-  `mcp.action` attributes are emitted via the OpenTelemetry API.
-  Bring your own SDK to actually export them — the standard pattern
+  `audit_writes_total{ok}`, `auth_attempts_total{mode, ok}`; histogram on
+  `tool_duration_ms{tool, ok}`; default Node metrics (CPU, RSS, GC,
+  event-loop lag) under the `security_mcp_` prefix. Scrape from your
+  monitoring stack — no additional config needed. When auth is enabled
+  (mode ≠ none), `/metrics` itself requires the same authentication;
+  set `metrics_protect: false` to expose it without auth.
+- **Tracing**: spans named `mcp.tool.call` with `mcp.tool`,
+  `mcp.action`, `mcp.principal`, `mcp.auth_mode`, and
+  `mcp.response_bytes` attributes are emitted via the OpenTelemetry
+  API. Bring your own SDK to actually export them — the standard pattern
   is `NODE_OPTIONS="--require ./otel-init.js"` registering a
   NodeTracerProvider with an OTLP exporter pointed at Tempo /
   Honeycomb / Datadog / Jaeger. Without an SDK the spans are
@@ -317,10 +362,13 @@ curl -sN -X POST localhost:8080/mcp \
      natively. Every `tool.invoked` / `tool.failed` event carries
      `request_id` + (if auth is on) `principal`. No special config.
   2. Optional durable JSONL via `audit_log: <path>` in the config.
-     One redacted line per `tools/call` with args **hashed** (sha256,
-     16 hex chars), not logged verbatim — safe to tail to a shared
-     volume / GCS bucket / S3 prefix. Mount the path in the
-     container; rotate externally (`logrotate`, daily rolls, etc.).
+      One redacted line per `tools/call` with args **hashed** (sha256,
+      16 hex chars), not logged verbatim — safe to tail to a shared
+      volume / GCS bucket / S3 prefix. Mount the path in the
+      container; rotate externally (`logrotate`, daily rolls, etc.).
+      Each line also records `auth_mode` and `response_bytes`. Set
+      `audit_record_args: true` to additionally log the full `args`
+      object (in addition to the hash).
 - **Token rotation**: `SECURITY_REPO_TOKEN` is a fine-grained PAT. For
   long-lived deploys, swap to a GitHub App installation token (~50
   lines in `src/sources/github.ts` to use `octokit` with app auth).
