@@ -181,6 +181,9 @@ collections:
       Optional directive attached to every list/get response — useful
       to make follow-up actions (e.g. "always run conftest after") hard
       for the model to skip.
+    usage_on: every                   # every | never; never suppresses the
+                                     # repeat when the directive already lives
+                                     # in the tool description. Default every.
     sources:
       - { type: file, path: ./examples/policies, patterns: ["**/*.md", "**/*.rego"] }
       - type: http
@@ -266,14 +269,55 @@ host environment, not the config file.
 { "action": "get",  "name": "tagging.md", "source": "local-policies" }
 { "action": "get",  "name": "local-policies::tagging.md" }   // qualified
 
+// context-frugal knobs (see "Context budget" below)
+{ "action": "list", "limit": 20 }
+{ "action": "list", "fields": ["name", "source"], "dedup": false }
+{ "action": "get",  "name": "big.md", "section": "Tagging" }
+{ "action": "get",  "name": "big.md", "max_bytes": 2000 }
+{ "action": "get",  "name": "big.md", "section": "Tagging", "max_bytes": 2000 }
+
 // tool_registry
-{ "action": "list" }
-{ "action": "describe", "name": "conftest" }
+{ "action": "list" }                              // compact by default (name/source/description)
+{ "action": "list", "verbose": true }             // include input_schema + metadata
+{ "action": "describe", "name": "conftest" }      // full input_schema
 { "action": "invoke",   "name": "conftest",
   "input": { "policy_path": "./policies", "input_path": "./plan.json" } }
 ```
 
 `list` returns metadata only (no body); `get` returns content.
+
+### Context budget
+
+The server's whole job is to feed the agent the right context at the
+right moment — but the agent's context window is the one resource it
+can't recharge, so the tools are tuned to spend it sparingly. Every
+content collection accepts the same optional knobs on `list`:
+
+- `limit` — cap the number of items returned (default: all).
+- `fields` — keep only the named fields on each item, e.g. `["name","source"]`
+  for a compact index the agent can scan before fetching bodies. Allowed
+  values: `name`, `source`, `title`, `description`, `uri`, `content_type`,
+  `metadata`, `sources`.
+- `dedup` (default `true`) — collapse items that share a `name` across
+  sources into one entry with a `sources[]` array, so a doc mirrored by
+  `file + github + mcp` doesn't appear three times. Set `dedup: false` to
+  see every source's copy (e.g. to spot stale mirrors).
+
+And on `get`:
+
+- `section` — for markdown/text, return only the body under the heading
+  whose text matches (case-insensitive substring); the heading line is
+  included. Throws `section not found` if no heading matches, so the
+  agent gets a precise error instead of a silent full dump.
+- `max_bytes` — truncate the returned content to at most N characters
+  and append a `[truncated]` marker. Pair `section` + `max_bytes` to
+  page through a large doc.
+
+`tool_registry(list)` returns a compact shape by default (`name`,
+`source`, `description` only) — pass `verbose: true` to pull
+`input_schema` + `metadata`, or call `describe` for the one tool the
+agent is about to invoke. Keeping the default `list` cheap lets the
+agent hold the whole registry in a few hundred tokens.
 
 ## Agent prompt — making it actually fire
 
@@ -287,32 +331,49 @@ the agent calls into the MCP without needing to be reminded:
 
 For stronger enforcement, set a per-collection `usage` field — it gets
 attached to every `list`/`get` response, so the model sees the
-directive on every call (not just once at tool-list time).
+directive on every call (not just once at tool-list time). If your host
+is context-budget-sensitive and the directive is already in the tool
+description, set `usage_on: never` on the collection to suppress the
+repeat (default `every`). There is no `first`-only mode: the HTTP
+transport is stateless and keeps no per-session memory.
 
 ## Layout
 
 ```
 src/
-  index.ts              # CLI dispatcher (init / validate / doctor / serve)
+  index.ts              # CLI dispatcher (init/validate/doctor/inspect/schema/lint/serve)
   server.ts             # MCP server + per-collection tool routing + http app
-  config.ts             # YAML schema (zod) + loader
+  config.ts             # YAML schema (zod) + loader + legacy-shape migration
   policies-cache.ts     # materialize .rego files for conftest
-  log.ts                # JSON-line logger + per-call request_id
+  log.ts                # JSON-line logger + per-call request_id + principal (ALS)
+  audit.ts              # redacted JSONL audit recorder (args sha256-hashed)
+  metrics.ts            # Prometheus registry (http-requests, tool-*, audit-writes)
+  tracing.ts            # OpenTelemetry API span wrapper (BYO exporter)
   cli/
     serve.ts            # `serve` subcommand (default)
     init.ts             # `init` — copy a preset to ./security.config.yaml
     validate.ts         # `validate` — schema + per-source probe
     doctor.ts           # `doctor` — environment diagnostics
+    inspect.ts          # `inspect` — list/describe/invoke tools in-process
+    schema.ts           # `schema` — emit the config's JSON Schema
+    lint.ts             # `lint` — validate a content repo against conventions
   sources/
     types.ts            # Source / ToolSource interfaces
     file.ts             # local glob source
     http.ts             # REST source
     github.ts           # GitHub Contents/Trees API source
-    mcp.ts              # proxy to another MCP server
+    gitlab.ts           # GitLab Trees API source (self-hosted + paginated)
+    mcp.ts              # proxy to another MCP server (resources + tools)
     command.ts          # inline tools (command + http)
+    opa-bundle.ts       # signed OPA bundle (.tar.gz) source
+    local-cmd.ts        # shell-command-backed source (shell:false + name allowlist)
   tools/
-    content.ts          # generic collection handler (list/get)
-    tool_registry.ts    # tool registry handler (list/describe/invoke)
+    content.ts          # generic collection handler (list/get + context-frugal knobs)
+    tool_registry.ts    # tool registry handler (list/describe/invoke, compact list)
+  auth/
+    index.ts            # buildAuthMiddleware dispatch + JSON-RPC 401
+    iap.ts              # trusted-header auth (e.g. Cloud IAP)
+    oidc.ts             # Bearer JWT verification (issuer + audience, JWKS discovery)
   util/
     env.ts              # ${ENV_VAR} interpolation
     timeout.ts          # abortableFetch + withTimeout helpers
@@ -323,6 +384,7 @@ examples/
   policies/  risk/  paved-roads/
 docs/
   DEPLOYMENT.md         # Cloud Run + AWS Lambda recipes
+  CONTRIBUTING.md       # local setup, test layout, PR conventions
 bin/
   security-mcp          # docker launcher with gh-token auto-resolution
 docker/
@@ -330,6 +392,11 @@ docker/
 Dockerfile              # multi-stage; non-root; conftest bundled
 security.config.example.yaml
 ```
+
+`loadConfig` also supports `tools.registry_files` (an array of YAML file
+paths), letting you split inline tool descriptors out of
+`security.config.yaml` and into per-tool files that are validated
+against the same `InlineTool` schema.
 
 ## License
 

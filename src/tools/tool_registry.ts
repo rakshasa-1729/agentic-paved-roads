@@ -7,6 +7,7 @@ export const ToolRegistryInputSchema = z.object({
   name: z.string().optional().describe("tool name (required for describe/invoke)"),
   input: z.unknown().optional().describe("arguments passed to the tool when invoking"),
   query: z.string().optional().describe("filter substring for action=list"),
+  verbose: z.boolean().optional().describe("(list) include input_schema + metadata on each tool; default false keeps list responses compact (name/source/description only), use describe for the full input_schema"),
 });
 
 export type ToolRegistryInput = z.infer<typeof ToolRegistryInputSchema>;
@@ -18,6 +19,7 @@ export const toolRegistryJsonSchema = {
     name: { type: "string", description: "tool name" },
     input: { description: "arguments passed when invoking" },
     query: { type: "string", description: "filter substring for action=list" },
+    verbose: { type: "boolean", description: "(list) include input_schema + metadata per tool; default false" },
   },
   required: ["action"],
   additionalProperties: false,
@@ -42,7 +44,7 @@ export async function handleToolRegistry(cat: LoadedToolsCategory, input: ToolRe
         }
       }),
     );
-    const tools = all.flat();
+    const tools = input.verbose ? all.flat() : all.flat().map(compactTool);
     return { tools, count: tools.length };
   }
 
@@ -71,4 +73,16 @@ export async function handleToolRegistry(cat: LoadedToolsCategory, input: ToolRe
     }
   }
   throw new Error(lastErr ?? `tool not found: ${input.name}`);
+}
+
+/**
+ * Default tool shape for `list`. Drops the (potentially large) JSON
+ * `input_schema` and free-form `metadata` so the agent can hold the
+ * whole registry in a few hundred tokens. `describe` returns the full
+ * shape including `input_schema` — the agent should call that for the
+ * one tool it's about to invoke.
+ */
+function compactTool(t: ToolEntry): ToolEntry {
+  const { input_schema, metadata, ...rest } = t;
+  return rest;
 }

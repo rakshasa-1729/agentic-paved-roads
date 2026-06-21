@@ -142,6 +142,15 @@ const Collection = z.object({
   // any policy, you MUST run conftest before opening a PR." The model sees
   // it on every call, not just once at tools/list time.
   usage: z.string().optional(),
+  // When (if ever) `usage` is attached to responses. `every` is the
+  // default (and the historical behavior) — the directive repeats on
+  // every list/get so the model can't skip it. `never` drops it
+  // entirely, useful for context-budget-sensitive hosts where the
+  // directive is already in the tool description at tools/list time.
+  // There is intentionally no `first`-only mode: the HTTP transport is
+  // stateless and keeps no per-session memory of which calls have
+  // already seen the directive.
+  usage_on: z.enum(["every", "never"]).optional(),
   sources: z.array(ContentSource).default([]),
 });
 
@@ -192,6 +201,7 @@ export interface LoadedCollection {
   name: string;
   description?: string;
   usage?: string;
+  usageOn: "every" | "never";
   sources: Source[];
 }
 
@@ -293,6 +303,7 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     name: col.name,
     description: col.description,
     usage: col.usage,
+    usageOn: col.usage_on ?? "every",
     sources: col.sources.map((s) => {
       if (s.type === "file") return new FileSource({ ...s, path: resolvePath(s.path) });
       if (s.type === "http") return new HttpSource(s);

@@ -7,6 +7,13 @@ export interface Item {
   content_type?: string;
   content?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Source ids that expose the same `name`. Only set on `list` responses
+   * when an item with the same name appears in more than one source and
+   * cross-source deduplication is enabled (the default). Lets the agent
+   * resolve the same doc from a specific source without re-listing.
+   */
+  sources?: string[];
 }
 
 export interface Source {
