@@ -33,19 +33,24 @@ export async function handleToolRegistry(cat: LoadedToolsCategory, input: ToolRe
   const sources = allSources(cat);
 
   if (input.action === "list") {
+    const sourceErrors: { source: string; error: string }[] = [];
     const all = await Promise.all(
       sources.map(async (s) => {
         try {
           return await s.list(input.query);
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sourceErrors.push({ source: s.id, error: msg });
           return [
-            { name: `__error__:${s.id}`, source: s.id, description: err instanceof Error ? err.message : String(err) } as ToolEntry,
+            { name: `__error__:${s.id}`, source: s.id, description: msg } as ToolEntry,
           ];
         }
       }),
     );
     const tools = input.verbose ? all.flat() : all.flat().map(compactTool);
-    return { tools, count: tools.length };
+    const response: Record<string, unknown> = { tools, count: tools.length };
+    if (sourceErrors.length > 0) response.source_errors = sourceErrors;
+    return response;
   }
 
   if (!input.name) throw new Error(`action=${input.action} requires 'name'`);

@@ -42,6 +42,7 @@ collections:
       #   path:  policies
       #   patterns: ["**/*.md", "**/*.rego"]
       #   token: "${SECURITY_REPO_TOKEN}"
+      #   cache_ttl_ms: 120000    # optional: tree cache TTL (default 60000)
       # - type: http
       #   name: central-policy-api
       #   base_url: https://policies.your-org.example/v1

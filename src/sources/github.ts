@@ -21,6 +21,7 @@ export interface GitHubSourceConfig {
   token?: string;
   api_base_url?: string;
   timeout_ms?: number;
+  cache_ttl_ms?: number;
 }
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -52,6 +53,7 @@ export class GitHubSource implements Source {
   private readonly tokenFromConfig: string;
   private readonly apiBase: string;
   private readonly timeoutMs: number;
+  private readonly cacheTtlMs: number;
   private resolvedToken?: string;
   private treeCache?: { ts: number; entries: TreeEntry[] };
 
@@ -64,6 +66,7 @@ export class GitHubSource implements Source {
     this.tokenFromConfig = interpolateEnv(cfg.token ?? "");
     this.apiBase = (cfg.api_base_url ?? "https://api.github.com").replace(/\/$/, "");
     this.timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+    this.cacheTtlMs = cfg.cache_ttl_ms ?? 60_000;
     this.id = cfg.name ?? `github:${this.owner}/${this.repo}/${this.subpath}@${this.ref}`;
     if (cfg.ref === undefined || cfg.ref === "main" || cfg.ref === "master") {
       // Pinning to a branch makes the source silently roll forward
@@ -74,9 +77,9 @@ export class GitHubSource implements Source {
     }
   }
 
-  async list(query?: string): Promise<Item[]> {
+  async list(query?: string, opts?: { refresh?: boolean }): Promise<Item[]> {
     await this.resolveToken();
-    const tree = await this.fetchTree();
+    const tree = await this.fetchTree(opts?.refresh);
     const prefix = this.subpath ? `${this.subpath}/` : "";
     const items: Item[] = [];
     for (const entry of tree) {
@@ -125,9 +128,8 @@ export class GitHubSource implements Source {
     return { ...this.toItem(rel, entry), content };
   }
 
-  private async fetchTree(): Promise<TreeEntry[]> {
-    const ttlMs = 60_000;
-    if (this.treeCache && Date.now() - this.treeCache.ts < ttlMs) {
+  private async fetchTree(refresh?: boolean): Promise<TreeEntry[]> {
+    if (!refresh && this.treeCache && Date.now() - this.treeCache.ts < this.cacheTtlMs) {
       return this.treeCache.entries;
     }
     const url = `${this.apiBase}/repos/${this.owner}/${this.repo}/git/trees/${encodeURIComponent(this.ref)}?recursive=1`;

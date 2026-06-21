@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import type { LoadedCollection } from "../config.js";
 import type { Item, Source } from "../sources/types.js";
 
@@ -17,6 +18,7 @@ export const ContentInputSchema = z.object({
   limit: z.number().int().positive().max(10_000).optional().describe("(list) cap the number of items returned; useful for large collections to stay within the model's context budget"),
   fields: z.array(z.enum(LIST_FIELDS)).optional().describe("(list) keep only these fields on each item (e.g. ['name','source'] for a compact index); `name` is recommended so the agent can later `get`"),
   dedup: z.boolean().optional().describe("(list) collapse items that share a name across sources into one entry with a `sources[]` array; default true"),
+  refresh: z.boolean().optional().describe("(list) bypass source caches and re-fetch fresh data; use after a merge/deploy to see live content"),
   section: z.string().optional().describe("(get) for markdown/text, return only the body under the heading whose text matches this substring (case-insensitive); the heading line is included"),
   max_bytes: z.number().int().positive().optional().describe("(get) truncate the returned content to at most this many characters and append a [truncated] marker; pair with section to page through a large doc"),
 });
@@ -37,6 +39,7 @@ export const contentJsonSchema = {
       description: "(list) keep only these fields on each item",
     },
     dedup: { type: "boolean", description: "(list) collapse same-named items across sources; default true" },
+    refresh: { type: "boolean", description: "(list) bypass source caches; use after a merge to see live content" },
     section: { type: "string", description: "(get) return only a markdown/text section by heading" },
     max_bytes: { type: "integer", minimum: 1, description: "(get) truncate content to at most N chars" },
   },
@@ -70,16 +73,19 @@ export async function handleContent(collection: LoadedCollection, input: Content
   const { sources, name } = resolveSource(collection, input.source, input.name);
 
   if (input.action === "list") {
+    const sourceErrors: { source: string; error: string }[] = [];
     const all = await Promise.all(
       sources.map(async (s) => {
         try {
-          return await s.list(input.query);
+          return await s.list(input.query, input.refresh ? { refresh: true } : undefined);
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          sourceErrors.push({ source: s.id, error: msg });
           return [
             {
               name: `__error__:${s.id}`,
               source: s.id,
-              description: err instanceof Error ? err.message : String(err),
+              description: msg,
             } as Item,
           ];
         }
@@ -90,7 +96,9 @@ export async function handleContent(collection: LoadedCollection, input: Content
     let view: Item[] | Record<string, unknown>[] = items;
     if (input.fields) view = items.map((i) => pickFields(i, input.fields as readonly string[]));
     if (typeof input.limit === "number" && input.limit > 0) view = view.slice(0, input.limit);
-    return withUsage(collection, { items: view, count: view.length });
+    const response: Record<string, unknown> = { items: view, count: view.length };
+    if (sourceErrors.length > 0) response.source_errors = sourceErrors;
+    return withUsage(collection, response);
   }
 
   if (!name) throw new Error("action=get requires 'name'");
@@ -130,6 +138,7 @@ export async function handleContent(collection: LoadedCollection, input: Content
       extra.truncated = true;
       extra.content_chars = original.length;
     }
+    extra.sha256 = createHash("sha256").update(content, "utf8").digest("hex");
     const payload: Record<string, unknown> = { ...item, content };
     for (const [k, v] of Object.entries(extra)) payload[k] = v;
     return withUsage(collection, payload);

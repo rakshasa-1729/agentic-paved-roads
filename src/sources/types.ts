@@ -18,7 +18,7 @@ export interface Item {
 
 export interface Source {
   readonly id: string;
-  list(query?: string): Promise<Item[]>;
+  list(query?: string, opts?: { refresh?: boolean }): Promise<Item[]>;
   get(name: string): Promise<Item>;
 }
 

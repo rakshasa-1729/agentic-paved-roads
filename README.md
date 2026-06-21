@@ -45,6 +45,7 @@ npm install && npm run build
 npx security-mcp init               # writes ./security.config.yaml from the security preset
 npx security-mcp validate           # parses + probes every source
 npx security-mcp doctor             # environment diagnostics
+npx security-mcp doctor --probe     # plus source reachability probes
 npx security-mcp inspect            # list / describe / invoke tools in-process
 npx security-mcp schema             # emit the config's JSON Schema
 npx security-mcp lint <repo-path>   # validate a content repo against conventions
@@ -272,6 +273,7 @@ host environment, not the config file.
 // context-frugal knobs (see "Context budget" below)
 { "action": "list", "limit": 20 }
 { "action": "list", "fields": ["name", "source"], "dedup": false }
+{ "action": "list", "refresh": true }                     // bypass source caches
 { "action": "get",  "name": "big.md", "section": "Tagging" }
 { "action": "get",  "name": "big.md", "max_bytes": 2000 }
 { "action": "get",  "name": "big.md", "section": "Tagging", "max_bytes": 2000 }
@@ -284,7 +286,7 @@ host environment, not the config file.
   "input": { "policy_path": "./policies", "input_path": "./plan.json" } }
 ```
 
-`list` returns metadata only (no body); `get` returns content.
+`list` returns metadata only (no body); `get` returns content. When a source fails during `list`, the response includes a `source_errors` array (e.g. `[{source: "gh-prod", error: "timeout"}]`) alongside the per-source `__error__:<id>` items, so the agent can surface unhealthy sources at a glance. `get` includes a `sha256` fingerprint of the delivered content (after section/truncation) so the agent can detect staleness.
 
 ### Context budget
 
@@ -302,6 +304,8 @@ content collection accepts the same optional knobs on `list`:
   sources into one entry with a `sources[]` array, so a doc mirrored by
   `file + github + mcp` doesn't appear three times. Set `dedup: false` to
   see every source's copy (e.g. to spot stale mirrors).
+- `refresh` — bypass source caches and re-fetch fresh data; useful after
+  a merge or deploy to see live content (supported by GitHub/GitLab sources).
 
 And on `get`:
 
@@ -311,7 +315,8 @@ And on `get`:
   agent gets a precise error instead of a silent full dump.
 - `max_bytes` — truncate the returned content to at most N characters
   and append a `[truncated]` marker. Pair `section` + `max_bytes` to
-  page through a large doc.
+  page through a large doc. The response includes a `sha256` hex digest of
+  the delivered content (after section/truncation).
 
 `tool_registry(list)` returns a compact shape by default (`name`,
 `source`, `description` only) — pass `verbose: true` to pull
@@ -398,6 +403,10 @@ security.config.example.yaml
 paths), letting you split inline tool descriptors out of
 `security.config.yaml` and into per-tool files that are validated
 against the same `InlineTool` schema.
+
+GitHub and GitLab sources accept an optional `cache_ttl_ms` setting
+(default 60000) to control the tree cache freshness, and `list(refresh: true)`
+skips the cache entirely for immediate reads after a merge or deploy.
 
 ## License
 

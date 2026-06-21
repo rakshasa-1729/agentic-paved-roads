@@ -55,6 +55,7 @@ const GitHubSrc = z.object({
   token: z.string().optional(),
   api_base_url: z.string().optional(),
   timeout_ms: z.number().int().positive().optional(),
+  cache_ttl_ms: z.number().int().positive().optional(),
 });
 
 const OpaBundleSrc = z.object({
@@ -77,6 +78,7 @@ const GitLabSrc = z.object({
   token: z.string().optional(),
   api_base_url: z.string().optional(),
   timeout_ms: z.number().int().positive().optional(),
+  cache_ttl_ms: z.number().int().positive().optional(),
 });
 
 const LocalCmdSrc = z.object({

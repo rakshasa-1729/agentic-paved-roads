@@ -3,10 +3,13 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+import { loadConfig } from "../config.js";
+import type { LoadedConfig } from "../config.js";
+import { McpResourceSource, McpToolSource } from "../sources/mcp.js";
 
 const exec = promisify(execFile);
 
-const HELP = `Usage: security-mcp doctor
+const HELP = `Usage: security-mcp doctor [--probe]
 
 Print environment diagnostics relevant to running security-mcp:
   - Node version
@@ -16,9 +19,15 @@ Print environment diagnostics relevant to running security-mcp:
   - default config file presence
   - relevant env vars
 
-Exits 0 unless something is genuinely broken (e.g. Node too old).
+With --probe, also attempts to load the config and call list() on every
+source to verify reachability. Source probes have a 5-second timeout.
+MCP sources are skipped (they spawn subprocesses).
+
+Exits 0 unless something is genuinely broken (e.g. Node too old, a
+source is unreachable with --probe).
 
 Options:
+  --probe    Probe each configured source for reachability.
   -h, --help  Show this help.
 `;
 
@@ -145,11 +154,95 @@ function checkEnv(): Check[] {
   });
 }
 
+const PROBE_TIMEOUT_MS = 5_000;
+
+async function probeSources(): Promise<Check[]> {
+  const configPath = process.env.SECURITY_MCP_CONFIG ?? "./security.config.yaml";
+  const abs = resolve(configPath);
+  if (!existsSync(abs)) {
+    return [
+      {
+        name: "config probe",
+        status: "info",
+        detail: `${abs} not found; skip probe`,
+        hint: "Run `security-mcp init` to create a config.",
+      },
+    ];
+  }
+
+  let cfg: LoadedConfig;
+  try {
+    cfg = await loadConfig(abs);
+  } catch (err) {
+    return [
+      {
+        name: "config probe",
+        status: "fail",
+        detail: `config error: ${err instanceof Error ? err.message : String(err)}`,
+      },
+    ];
+  }
+
+  const checks: Check[] = [];
+
+  // Probe collection content sources
+  for (const col of cfg.collections) {
+    for (const s of col.sources) {
+      if (s instanceof McpResourceSource) {
+        checks.push({
+          name: `probe: ${s.id}`,
+          status: "info",
+          detail: "skipped (MCP source, spawns subprocess)",
+        });
+        continue;
+      }
+      const start = Date.now();
+      try {
+        const items = await Promise.race([
+          s.list(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`probe timeout (${PROBE_TIMEOUT_MS}ms)`)), PROBE_TIMEOUT_MS),
+          ),
+        ]);
+        const elapsed = Date.now() - start;
+        checks.push({
+          name: `probe: ${s.id}`,
+          status: "ok",
+          detail: `${items.length} items (${elapsed}ms)`,
+        });
+      } catch (err) {
+        const elapsed = Date.now() - start;
+        checks.push({
+          name: `probe: ${s.id}`,
+          status: "fail",
+          detail: `unreachable (${elapsed}ms): ${err instanceof Error ? err.message : String(err)}`,
+          hint: "Check connectivity, credentials, and source configuration.",
+        });
+      }
+    }
+  }
+
+  // Probe tool MCP sources
+  for (const s of cfg.tools.mcpSources) {
+    if (s instanceof McpToolSource) {
+      checks.push({
+        name: `probe: ${s.id} (tools)`,
+        status: "info",
+        detail: "skipped (MCP source, spawns subprocess)",
+      });
+    }
+  }
+
+  return checks;
+}
+
 export async function run(args: string[]): Promise<number> {
   if (args[0] === "-h" || args[0] === "--help") {
     process.stdout.write(HELP);
     return 0;
   }
+
+  const probe = args.includes("--probe");
 
   const checks: Check[] = [];
   checks.push(await checkNode());
@@ -161,6 +254,13 @@ export async function run(args: string[]): Promise<number> {
 
   process.stdout.write("\nenv:\n");
   for (const c of checkEnv()) process.stdout.write(`  ${fmt(c)}\n`);
+
+  if (probe) {
+    const probeChecks = await probeSources();
+    process.stdout.write("\nsource probes:\n");
+    for (const c of probeChecks) process.stdout.write(`  ${fmt(c)}\n`);
+    checks.push(...probeChecks);
+  }
 
   const failed = checks.some((c) => c.status === "fail");
   return failed ? 1 : 0;

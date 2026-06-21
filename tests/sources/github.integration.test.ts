@@ -240,4 +240,45 @@ describe("GitHubSource (integration)", () => {
     const treeCalls = requests.filter((r) => r.url?.includes("/git/trees/"));
     expect(treeCalls).toHaveLength(1);
   });
+
+  it("refresh=true bypasses the tree cache", async () => {
+    const src = new GitHubSource({
+      type: "github",
+      name: "stub-gh",
+      owner: "o",
+      repo: "r",
+      ref: "v1",
+      api_base_url: baseUrl,
+      token: "t",
+      cache_ttl_ms: 60_000,
+    });
+    requests.length = 0;
+    await src.list();
+    await src.list(undefined, { refresh: true });
+    const treeCalls = requests.filter((r) => r.url?.includes("/git/trees/"));
+    expect(treeCalls).toHaveLength(2);
+  });
+
+  it("respects a custom cache_ttl_ms shorter than the default 60s", async () => {
+    const src = new GitHubSource({
+      type: "github",
+      name: "stub-gh",
+      owner: "o",
+      repo: "r",
+      ref: "v1",
+      api_base_url: baseUrl,
+      token: "t",
+      cache_ttl_ms: 50,
+    });
+    requests.length = 0;
+    await src.list();
+    await src.list();
+    let treeCalls = requests.filter((r) => r.url?.includes("/git/trees/"));
+    expect(treeCalls).toHaveLength(1);
+
+    await new Promise((r) => setTimeout(r, 60));
+    await src.list();
+    treeCalls = requests.filter((r) => r.url?.includes("/git/trees/"));
+    expect(treeCalls).toHaveLength(2);
+  });
 });

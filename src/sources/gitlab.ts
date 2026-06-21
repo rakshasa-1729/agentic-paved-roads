@@ -33,6 +33,7 @@ export interface GitLabSourceConfig {
   /** Default https://gitlab.com. Override for self-hosted. */
   api_base_url?: string;
   timeout_ms?: number;
+  cache_ttl_ms?: number;
 }
 
 interface RepoTreeEntry {
@@ -65,6 +66,7 @@ export class GitLabSource implements Source {
   private readonly tokenFromConfig: string;
   private readonly apiBase: string;
   private readonly timeoutMs: number;
+  private readonly cacheTtlMs: number;
   private treeCache?: { ts: number; entries: RepoTreeEntry[] };
 
   constructor(cfg: GitLabSourceConfig) {
@@ -75,14 +77,15 @@ export class GitLabSource implements Source {
     this.tokenFromConfig = interpolateEnv(cfg.token ?? "");
     this.apiBase = (cfg.api_base_url ?? "https://gitlab.com").replace(/\/$/, "");
     this.timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+    this.cacheTtlMs = cfg.cache_ttl_ms ?? 60_000;
     this.id = cfg.name ?? `gitlab:${cfg.project}/${this.subpath}@${this.ref}`;
     if (cfg.ref === undefined || cfg.ref === "main" || cfg.ref === "master") {
       log("warn", "gitlab.unpinned_ref", { source_id: this.id, ref: this.ref });
     }
   }
 
-  async list(query?: string): Promise<Item[]> {
-    const tree = await this.fetchTree();
+  async list(query?: string, opts?: { refresh?: boolean }): Promise<Item[]> {
+    const tree = await this.fetchTree(opts?.refresh);
     const items: Item[] = [];
     for (const e of tree) {
       if (e.type !== "blob") continue;
@@ -114,9 +117,8 @@ export class GitLabSource implements Source {
     return { ...this.toItem(rel, entry), content };
   }
 
-  private async fetchTree(): Promise<RepoTreeEntry[]> {
-    const ttlMs = 60_000;
-    if (this.treeCache && Date.now() - this.treeCache.ts < ttlMs) {
+  private async fetchTree(refresh?: boolean): Promise<RepoTreeEntry[]> {
+    if (!refresh && this.treeCache && Date.now() - this.treeCache.ts < this.cacheTtlMs) {
       return this.treeCache.entries;
     }
     const pathParam = this.subpath ? `&path=${encodeURIComponent(this.subpath)}` : "";

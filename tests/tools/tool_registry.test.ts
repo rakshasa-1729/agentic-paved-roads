@@ -104,11 +104,18 @@ describe("handleToolRegistry — list", () => {
         throw new Error("unreachable");
       },
     };
-    const res = (await handleToolRegistry(cat(reg, [mcp]), { action: "list" })) as { tools: ToolEntry[] };
+    const res = (await handleToolRegistry(cat(reg, [mcp]), { action: "list" })) as { tools: ToolEntry[]; source_errors?: { source: string; error: string }[] };
     const names = res.tools.map((t) => t.name);
     expect(names).toContain("conftest");
     expect(names).toContain("__error__:remote-mcp");
     expect(res.tools.find((t) => t.name === "__error__:remote-mcp")?.description).toBe("connection refused");
+    expect(res.source_errors).toEqual([{ source: "remote-mcp", error: "connection refused" }]);
+  });
+
+  it("omits source_errors when all sources succeed", async () => {
+    const reg = inlineReg([{ type: "command", name: "conftest", command: "x" }]);
+    const res = (await handleToolRegistry(cat(reg), { action: "list" })) as { source_errors?: unknown[] };
+    expect(res.source_errors).toBeUndefined();
   });
 });
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import type { LoadedCollection } from "../../src/config.js";
 import type { Item, Source } from "../../src/sources/types.js";
 import { handleContent } from "../../src/tools/content.js";
@@ -20,6 +21,8 @@ interface StubSourceConfig {
   getFallback?: string[];
   /** Throw from list() to exercise the error-as-item path. */
   failList?: boolean;
+  /** Track refresh flag passed to list(). */
+  lastRefresh?: boolean;
 }
 
 function stubSource(cfg: StubSourceConfig): Source {
@@ -31,7 +34,8 @@ function stubSource(cfg: StubSourceConfig): Source {
       ];
   return {
     id: cfg.id,
-    async list(query?: string): Promise<Item[]> {
+    async list(query?: string, opts?: { refresh?: boolean }): Promise<Item[]> {
+      cfg.lastRefresh = opts?.refresh;
       if (cfg.failList) throw new Error(`${cfg.id} boom`);
       if (!query) return items.map((i) => ({ ...i }));
       const q = query.toLowerCase();
@@ -111,22 +115,55 @@ describe("handleContent — list", () => {
     expect(res.count).toBe(5);
   });
 
-  it("surfaces a failing source as an __error__ item without failing the whole list", async () => {
+  it("surfaces a failing source as an __error__ item and in source_errors without failing the whole list", async () => {
     const c = collection({
       sources: [stubSource({ id: "good" }), stubSource({ id: "bad", failList: true })],
     });
-    const res = (await handleContent(c, { action: "list" })) as { items: Item[] };
+    const res = (await handleContent(c, { action: "list" })) as { items: Item[]; source_errors?: { source: string; error: string }[] };
     const names = res.items.map((i) => i.name);
     expect(names).toContain("d1.md");
     expect(names).toContain("__error__:bad");
     const errItem = res.items.find((i) => i.name === "__error__:bad")!;
     expect(errItem.description).toBe("bad boom");
+    expect(res.source_errors).toEqual([{ source: "bad", error: "bad boom" }]);
+  });
+
+  it("omits source_errors when all sources succeed", async () => {
+    const c = collection({ sources: [stubSource({ id: "s1" })] });
+    const res = (await handleContent(c, { action: "list" })) as { source_errors?: unknown[] };
+    expect(res.source_errors).toBeUndefined();
+  });
+
+  it("collects source_errors from multiple failing sources", async () => {
+    const c = collection({
+      sources: [stubSource({ id: "bad1", failList: true }), stubSource({ id: "bad2", failList: true })],
+    });
+    const res = (await handleContent(c, { action: "list" })) as { source_errors?: { source: string; error: string }[] };
+    expect(res.source_errors).toHaveLength(2);
+    expect(res.source_errors!.map((e) => e.source).sort()).toEqual(["bad1", "bad2"]);
+    expect(res.source_errors!.every((e) => e.error.includes("boom"))).toBe(true);
   });
 
   it("usage_on=never drops the directive even when usage is configured", async () => {
     const c = collection({ usage: "directive", usageOn: "never", sources: [stubSource({ id: "s1" })] });
     const res = (await handleContent(c, { action: "list" })) as { usage?: string };
     expect(res.usage).toBeUndefined();
+  });
+
+  it("refresh=true passes through to sources (bypass cache)", async () => {
+    const srcCfg = { id: "s1" };
+    const src = stubSource(srcCfg);
+    const c = collection({ sources: [src] });
+    await handleContent(c, { action: "list", refresh: true });
+    expect(srcCfg.lastRefresh).toBe(true);
+  });
+
+  it("refresh=false does not set refresh on the source call", async () => {
+    const srcCfg = { id: "s1" };
+    const src = stubSource(srcCfg);
+    const c = collection({ sources: [src] });
+    await handleContent(c, { action: "list" });
+    expect(srcCfg.lastRefresh).toBeUndefined();
   });
 });
 
@@ -137,6 +174,34 @@ describe("handleContent — get", () => {
     expect(res.content).toBe("# D1\nbody of d1");
     expect(res.name).toBe("d1.md");
     expect(res.usage).toBeUndefined();
+  });
+
+  it("includes a sha256 fingerprint of the delivered content", async () => {
+    const c = collection({ sources: [stubSource({ id: "s1" })] });
+    const res = (await handleContent(c, { action: "get", name: "d1.md" })) as Item & { sha256?: string };
+    expect(res.sha256).toBeDefined();
+    expect(res.sha256).toBe(createHash("sha256").update("# D1\nbody of d1", "utf8").digest("hex"));
+    expect(res.sha256).toHaveLength(64);
+  });
+
+  it("sha256 reflects the section content (not the full original)", async () => {
+    const md = `# Top\nintro\n## Tag\ntag body\n## Other\nother\n`;
+    const c = collection({
+      sources: [stubSource({ id: "s", items: [{ name: "x.md", source: "s", content_type: "text/markdown", content: md }] })],
+    });
+    const res = (await handleContent(c, { action: "get", name: "x.md", section: "tag" })) as Item & { sha256?: string; section?: string };
+    const expectedContent = "## Tag\ntag body";
+    expect(res.sha256).toBe(createHash("sha256").update(expectedContent, "utf8").digest("hex"));
+  });
+
+  it("sha256 reflects truncated content (not the full original)", async () => {
+    const long = "# H\n" + "x".repeat(500);
+    const c = collection({
+      sources: [stubSource({ id: "s", items: [{ name: "big.md", source: "s", content_type: "text/markdown", content: long }] })],
+    });
+    const res = (await handleContent(c, { action: "get", name: "big.md", max_bytes: 10 })) as Item & { sha256?: string; truncated?: boolean };
+    expect(res.truncated).toBe(true);
+    expect(res.sha256).toBe(createHash("sha256").update(res.content!, "utf8").digest("hex"));
   });
 
   it("falls through to the next source that has the name", async () => {

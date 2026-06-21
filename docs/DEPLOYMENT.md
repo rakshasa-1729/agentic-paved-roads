@@ -372,6 +372,10 @@ curl -sN -X POST localhost:8080/mcp \
 - **Token rotation**: `SECURITY_REPO_TOKEN` is a fine-grained PAT. For
   long-lived deploys, swap to a GitHub App installation token (~50
   lines in `src/sources/github.ts` to use `octokit` with app auth).
+- **Source diagnostics**: `npx security-mcp doctor --probe` probes every
+  configured collection source for reachability and reports per-source
+  latency — useful for debugging "why does the MCP see stale data?" during
+  deploy validation or incident triage.
 - **Scaling**: read-heavy, mostly cached behind the github source's
   60-second tree cache. A single instance handles 100+ concurrent dev
   sessions comfortably.
