@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Server } from "node:http";
 import { AddressInfo } from "node:net";
-import { isToolAllowed, buildHttpApp } from "../../src/server.js";
+import { isToolAllowed, isCollectionAllowed, buildHttpApp } from "../../src/server.js";
 import type { LoadedConfig } from "../../src/config.js";
 import { InlineToolSource } from "../../src/sources/command.js";
 
@@ -49,6 +49,47 @@ describe("isToolAllowed", () => {
   it("allows when principal is undefined and default_allow is true", () => {
     const rbac = { default_allow: true, rules: {} };
     expect(isToolAllowed(rbac, undefined, "policy_tool")).toBe(true);
+  });
+});
+
+describe("isCollectionAllowed", () => {
+  it("returns true when rbac.collections is not configured", () => {
+    expect(isCollectionAllowed(undefined, "alice", "policy_tool")).toBe(true);
+    expect(isCollectionAllowed({ default_allow: false, rules: {} }, "alice", "policy_tool")).toBe(true);
+  });
+
+  it("always returns true for tool_registry (tool-level RBAC covers it)", () => {
+    const rbac = { default_allow: false, rules: {}, collections: { default_allow: false, rules: { alice: ["policy_tool"] } } };
+    expect(isCollectionAllowed(rbac, "alice", "tool_registry")).toBe(true);
+    expect(isCollectionAllowed(rbac, "bob", "tool_registry")).toBe(true);
+  });
+
+  it("allows listed collections for a known principal", () => {
+    const rbac = { default_allow: false, rules: {}, collections: { default_allow: false, rules: { alice: ["policy_tool", "risk_index"] } } };
+    expect(isCollectionAllowed(rbac, "alice", "policy_tool")).toBe(true);
+    expect(isCollectionAllowed(rbac, "alice", "risk_index")).toBe(true);
+  });
+
+  it("denies unlisted collections for a known principal", () => {
+    const rbac = { default_allow: false, rules: {}, collections: { default_allow: false, rules: { alice: ["policy_tool"] } } };
+    expect(isCollectionAllowed(rbac, "alice", "risk_index")).toBe(false);
+  });
+
+  it("allows all collections via wildcard *", () => {
+    const rbac = { default_allow: false, rules: {}, collections: { default_allow: false, rules: { alice: ["*"] } } };
+    expect(isCollectionAllowed(rbac, "alice", "policy_tool")).toBe(true);
+    expect(isCollectionAllowed(rbac, "alice", "anything")).toBe(true);
+  });
+
+  it("denies unlisted principals when default_allow is false", () => {
+    const rbac = { default_allow: false, rules: {}, collections: { default_allow: false, rules: { alice: ["policy_tool"] } } };
+    expect(isCollectionAllowed(rbac, "bob", "policy_tool")).toBe(false);
+  });
+
+  it("allows unlisted principals when default_allow is true", () => {
+    const rbac = { default_allow: false, rules: {}, collections: { default_allow: true, rules: { alice: ["policy_tool"] } } };
+    expect(isCollectionAllowed(rbac, "bob", "policy_tool")).toBe(true);
+    expect(isCollectionAllowed(rbac, "bob", "risk_index")).toBe(true);
   });
 });
 

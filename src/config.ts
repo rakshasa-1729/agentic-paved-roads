@@ -215,6 +215,12 @@ export const ConfigSchema = z.object({
    * preventing sensitive input from leaking into the audit trail. */
   audit_record_args: z.boolean().default(false),
   metrics_protect: z.boolean().default(true),
+  rate_limit: z
+    .object({
+      window_ms: z.number().int().positive().default(60_000),
+      max_requests: z.number().int().positive().default(100),
+    })
+    .optional(),
   /** RBAC: restrict which tools a principal can call. When absent,
    * all tools are available to all principals. When present, each
    * principal is looked up in `rules`; their listed tools (or `*`)
@@ -225,6 +231,12 @@ export const ConfigSchema = z.object({
     .object({
       default_allow: z.boolean().default(false),
       rules: z.record(z.array(z.string())).default({}),
+      collections: z
+        .object({
+          default_allow: z.boolean().default(false),
+          rules: z.record(z.array(z.string())).default({}),
+        })
+        .optional(),
     })
     .optional(),
 });
@@ -258,7 +270,12 @@ export interface LoadedConfig {
   auditLogPath?: string;
   auditRecordArgs?: boolean;
   metrics_protect?: boolean;
-  rbac?: { default_allow: boolean; rules: Record<string, string[]> };
+  rateLimit?: { window_ms: number; max_requests: number };
+  rbac?: {
+    default_allow: boolean;
+    rules: Record<string, string[]>;
+    collections?: { default_allow: boolean; rules: Record<string, string[]> };
+  };
 }
 
 /**
@@ -390,6 +407,15 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     auditLogPath: cfg.audit_log ? resolvePath(cfg.audit_log) : undefined,
     auditRecordArgs: cfg.audit_record_args,
     metrics_protect: cfg.metrics_protect,
-    rbac: cfg.rbac ? { default_allow: cfg.rbac.default_allow, rules: cfg.rbac.rules } : undefined,
+    rateLimit: cfg.rate_limit,
+    rbac: cfg.rbac
+      ? {
+          default_allow: cfg.rbac.default_allow,
+          rules: cfg.rbac.rules,
+          collections: cfg.rbac.collections
+            ? { default_allow: cfg.rbac.collections.default_allow, rules: cfg.rbac.collections.rules }
+            : undefined,
+        }
+      : undefined,
   };
 }

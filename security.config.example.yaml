@@ -167,3 +167,13 @@ tools:
 #   rules:
 #     alice@example.com: [policy_tool, tool_registry]
 #     ci-bot: ["*"]                  # wildcard — all tools
+#   collections:
+#     default_allow: false           # deny unlisted collections
+#     rules:
+#       alice@example.com: [policy_tool, risk_index]
+#       ci-bot: ["*"]                # wildcard — all collections
+
+# ─── Rate limiting (optional) ──────────────────────────────────────
+# rate_limit:
+#   window_ms: 60000                 # sliding window (default 60 s)
+#   max_requests: 100                # max POST /mcp per window (default 100)

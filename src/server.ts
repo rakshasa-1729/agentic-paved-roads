@@ -11,6 +11,7 @@ import { buildAuthMiddleware } from "./auth/index.js";
 import { type AuditRecorder, noopAudit } from "./audit.js";
 import { httpRequests, renderMetrics, toolDuration, toolInvocations } from "./metrics.js";
 import { withSpan } from "./tracing.js";
+import { RateLimiter, type RateLimitConfig } from "./rate-limit.js";
 
 // The conftest tool conventionally reads .rego files materialized from a
 // collection named one of these. First match wins; falls back to no
@@ -46,6 +47,27 @@ export function isToolAllowed(
   const rules = rbac.rules[principal ?? ""];
   if (rules) return rules.includes("*") || rules.includes(tool);
   return rbac.default_allow;
+}
+
+/**
+ * RBAC gate for collection access. When `rbac.collections` is configured,
+ * principals must be explicitly listed in its rules (or fall through to
+ * its `default_allow`) to access a collection. When `rbac.collections` is
+ * not configured, all collections are allowed (backward compat).
+ *
+ * Always returns `true` for `tool_registry` — tool-level RBAC covers it.
+ */
+export function isCollectionAllowed(
+  rbac: { collections?: { default_allow: boolean; rules: Record<string, string[]> } } | undefined,
+  principal: string | undefined,
+  collection: string,
+): boolean {
+  if (collection === "tool_registry") return true;
+  const col = rbac?.collections;
+  if (!col) return true;
+  const rules = col.rules[principal ?? ""];
+  if (rules) return rules.includes("*") || rules.includes(collection);
+  return col.default_allow;
 }
 
 /**
@@ -89,6 +111,24 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
         const duration_ms = Date.now() - start;
         const msg = `principal "${currentPrincipal() ?? ""}" is not authorized to call tool "${name}"`;
         log("warn", "authz.denied", { tool: name, principal: currentPrincipal(), duration_ms });
+        toolInvocations.inc({ tool: name, ok: "false" });
+        audit.record({
+          request_id: currentRequestId(),
+          principal: currentPrincipal(),
+          auth_mode: cfg.auth.mode,
+          tool: name,
+          action,
+          args,
+          ok: false,
+          duration_ms,
+          error: msg,
+        });
+        return { isError: true, content: [{ type: "text", text: msg }] };
+      }
+      if (name !== "tool_registry" && !isCollectionAllowed(cfg.rbac, currentPrincipal(), name)) {
+        const duration_ms = Date.now() - start;
+        const msg = `principal "${currentPrincipal() ?? ""}" is not authorized to access collection "${name}"`;
+        log("warn", "authz.collection_denied", { collection: name, principal: currentPrincipal(), duration_ms });
         toolInvocations.inc({ tool: name, ok: "false" });
         audit.record({
           request_id: currentRequestId(),
@@ -170,6 +210,7 @@ export function buildHttpApp(
   cfg: LoadedConfig,
   options: { host?: string; allowedHosts?: string[]; audit?: AuditRecorder } = {},
 ): import("express").Express {
+  const rateLimiter = cfg.rateLimit ? new RateLimiter(cfg.rateLimit) : undefined;
   const app = createMcpExpressApp({
     host: options.host,
     allowedHosts: options.allowedHosts,
@@ -190,7 +231,22 @@ export function buildHttpApp(
     res.status(200).send(await renderMetrics());
   });
 
-  app.post("/mcp", authMiddleware, async (req, res) => {
+  const rateLimitMiddleware = rateLimiter
+    ? (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+        const key = currentPrincipal() ?? req.ip ?? "unknown";
+        if (!rateLimiter.check(key)) {
+          res.status(429).json({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "rate limit exceeded" },
+            id: null,
+          });
+          return;
+        }
+        next();
+      }
+    : undefined;
+
+  app.post("/mcp", authMiddleware, ...(rateLimitMiddleware ? [rateLimitMiddleware] : []), async (req, res) => {
     const server = buildServer(cfg, audit);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on("finish", () => httpRequests.inc({ status_class: `${Math.floor(res.statusCode / 100)}xx` }));

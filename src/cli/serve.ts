@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
+import { type Server as HttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig } from "../config.js";
+import { loadConfig, type LoadedConfig } from "../config.js";
 import { materializePolicies } from "../policies-cache.js";
 import { buildHttpApp, buildServer, findPolicyCollection, logStarted } from "../server.js";
 import { log } from "../log.js";
@@ -121,6 +122,14 @@ async function serveStdio(
   const server = buildServer(cfg, audit);
   await server.connect(new StdioServerTransport());
   logStarted(cfg, materialized, policiesCacheDir, "stdio", configPath);
+
+  process.on("SIGHUP", () => {
+    log("info", "server.sighup_ignored", {
+      transport: "stdio",
+      reason: "stdio transport does not support hot-reload; restart the process to pick up config changes",
+    });
+  });
+
   installSignalHandlers({
     label: "stdio",
     drain: async () => {
@@ -142,31 +151,88 @@ async function serveHttp(
   port: number,
   host: string,
 ): Promise<void> {
-  const app = buildHttpApp(cfg, {
-    host,
-    allowedHosts: process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean),
-    audit,
-  });
+  let currentCfg = cfg;
+  let currentAudit: AuditRecorder = audit;
+  let currentMaterialized = materialized;
+  let currentServer: HttpServer;
 
-  const httpServer = await new Promise<import("node:http").Server>((resolve) => {
+  function buildHttpAppForCfg(c: LoadedConfig, a: AuditRecorder) {
+    return buildHttpApp(c, {
+      host,
+      allowedHosts: process.env.ALLOWED_HOSTS?.split(",").map((h) => h.trim()).filter(Boolean),
+      audit: a,
+    });
+  }
+
+  let app = buildHttpAppForCfg(currentCfg, currentAudit);
+  currentServer = await new Promise<HttpServer>((resolve) => {
     const s = app.listen(port, host, () => {
-      logStarted(cfg, materialized, policiesCacheDir, `http :${port}`, configPath);
+      logStarted(currentCfg, currentMaterialized, policiesCacheDir, `http :${port}`, configPath);
       resolve(s);
     });
+  });
+
+  // SIGHUP: hot-reload the config without restarting the process.
+  process.on("SIGHUP", async () => {
+    log("info", "server.reloading", { transport: `http :${port}` });
+    try {
+      const newCfg = await loadConfig(configPath);
+
+      // Re-materialize policies for the new config (swallows per-source
+      // errors — a missing source shouldn't prevent the reload).
+      const newPolicyCollection = findPolicyCollection(newCfg.collections);
+      let newMaterialized = 0;
+      if (newPolicyCollection) {
+        try {
+          newMaterialized = await materializePolicies(newPolicyCollection.sources, policiesCacheDir);
+        } catch (err) {
+          log("error", "policies_cache.materialize_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      // Close the old audit log and open a new one (in case the path or
+      // record-args setting changed).
+      await currentAudit.close();
+      const newAudit = openAuditLog(newCfg.auditLogPath, { recordArgs: newCfg.auditRecordArgs });
+
+      // Build a fresh Express app from the new config (this recreates
+      // auth middleware and rate limiter, so mode/header/limit changes
+      // take effect immediately).
+      const newApp = buildHttpAppForCfg(newCfg, newAudit);
+
+      // Graceful swap: close the old server (drains in-flight requests)
+      // then start the new one.
+      await new Promise<void>((resolve) => currentServer.close(() => resolve()));
+      currentServer = newApp.listen(port, host, () => {
+        log("info", "server.reloaded", {
+          transport: `http :${port}`,
+          collections: newCfg.collections.map((c: LoadedConfig["collections"][number]) => c.name),
+          materialized: newMaterialized,
+        });
+      });
+
+      currentCfg = newCfg;
+      currentAudit = newAudit;
+      currentMaterialized = newMaterialized;
+      app = newApp;
+    } catch (err) {
+      log("error", "server.reload_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   installSignalHandlers({
     label: `http :${port}`,
     drain: async () => {
-      // server.close() stops accepting new connections + waits for
-      // in-flight requests to finish. We give them a hard 30s budget
-      // so a stuck handler can't block the shutdown forever.
       await Promise.race([
-        new Promise<void>((resolve) => httpServer.close(() => resolve())),
+        new Promise<void>((resolve) => currentServer.close(() => resolve())),
         new Promise<void>((resolve) => setTimeout(resolve, 30_000)),
       ]);
     },
-    audit,
+    audit: () => currentAudit,
   });
 }
 
@@ -179,9 +245,10 @@ async function serveHttp(
 function installSignalHandlers(opts: {
   label: string;
   drain: () => Promise<void>;
-  audit: AuditRecorder;
+  audit: AuditRecorder | (() => AuditRecorder);
 }): void {
   let shuttingDown = false;
+  const getAudit = (typeof opts.audit === "function" ? opts.audit : () => opts.audit) as () => AuditRecorder;
   const handle = (sig: NodeJS.Signals): void => {
     if (shuttingDown) {
       log("warn", "server.shutdown_forced", { signal: sig, transport: opts.label });
@@ -192,7 +259,7 @@ function installSignalHandlers(opts: {
     void (async () => {
       try {
         await opts.drain();
-        await opts.audit.close();
+        await getAudit().close();
         log("info", "server.shutdown_complete", { transport: opts.label });
         process.exit(0);
       } catch (err) {

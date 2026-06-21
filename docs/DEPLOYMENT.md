@@ -273,6 +273,38 @@ increment `tool_invocations_total{ok="false"}`, and emit an
 `authz.denied` log line. When RBAC is not configured, all authenticated
 principals may call all tools.
 
+**Collection-level RBAC**: optionally restrict which collections each
+principal may access independently of tool-level RBAC. When configured,
+a principal must be allowed by both the tool-level rule (to call the
+tool at all) AND the collection-level rule (to access that specific
+collection). `tool_registry` always passes collection RBAC (tool-level
+rules cover it). Example:
+
+```yaml
+rbac:
+  default_allow: false
+  rules:
+    alice@example.com: [policy_tool, tool_registry]
+  collections:
+    default_allow: false
+    rules:
+      alice@example.com: [policy_tool, risk_index]
+```
+
+**Rate limiting**: optional in-memory sliding-window rate limiter on
+`POST /mcp`. Configured via `rate_limit` in the config:
+
+```yaml
+rate_limit:
+  window_ms: 60000       # sliding window (default 60 s)
+  max_requests: 100      # max requests per window (default 100)
+```
+
+When the limit is exceeded the client receives an MCP error with code
+`-32000` and message "rate limit exceeded". The limiter keys on the
+authenticated principal (or client IP when auth is off). A new window
+starts fresh — there is no sustained penalty for past bursts.
+
 ---
 
 ## 5. Transports
@@ -354,9 +386,16 @@ curl -sN -X POST localhost:8080/mcp \
   discarded by the no-op tracer (negligible cost).
 - **Graceful shutdown**: SIGTERM / SIGINT drain in-flight `/mcp`
   requests (30 s budget), flush the audit log, then exit 0. A second
-  signal during shutdown forces an immediate exit. Containers stopped
-  by Cloud Run / Kubernetes finish their current requests instead of
-  dropping connections mid-handshake.
+   signal during shutdown forces an immediate exit. Containers stopped
+   by Cloud Run / Kubernetes finish their current requests instead of
+   dropping connections mid-handshake.
+- **Config hot-reload (HTTP only)**: SIGHUP re-reads the config file,
+   re-materializes policies, closes the old audit log, and rebuilds the
+   Express app — swapping the HTTP listener without a full restart. Auth
+   mode, rate limits, RBAC rules, collections, and inline tools all pick
+   up the new values. A malformed config is rejected (old config stays
+   live) and logged as `server.reload_failed`. Stdio mode ignores SIGHUP
+   (each session is tied to the config it was started with).
 - **Audit log**: two layers ship.
   1. Structured JSON-line logs to stderr → Cloud Logging / CloudWatch
      natively. Every `tool.invoked` / `tool.failed` event carries
