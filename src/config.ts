@@ -42,6 +42,7 @@ const McpSrc = z.object({
   args: z.array(z.string()).optional(),
   env: z.record(z.string()).optional(),
   connect_timeout_ms: z.number().int().positive().optional(),
+  cache_ttl_ms: z.number().int().positive().optional(),
 });
 
 const GitHubSrc = z.object({
@@ -117,6 +118,9 @@ const InlineCommandTool = z.object({
   input_schema: z.record(z.unknown()).optional(),
   command_timeout_ms: z.number().int().positive().optional(),
   output_max_bytes: z.number().int().positive().optional(),
+  usage: z.string().optional(),
+  validate_command: z.string().optional(),
+  validate_args: z.array(z.string()).optional(),
 });
 
 const InlineHttpTool = z.object({
@@ -129,6 +133,8 @@ const InlineHttpTool = z.object({
   body_template: z.unknown().optional(),
   input_schema: z.record(z.unknown()).optional(),
   timeout_ms: z.number().int().positive().optional(),
+  output_max_bytes: z.number().int().positive().optional(),
+  usage: z.string().optional(),
 });
 
 export const InlineTool = z.discriminatedUnion("type", [InlineCommandTool, InlineHttpTool]);
@@ -158,6 +164,8 @@ const Collection = z.object({
 
 const ToolsCategory = z.object({
   description: z.string().optional(),
+  usage: z.string().optional(),
+  usage_on: z.enum(["every", "never"]).optional(),
   registry: z.array(InlineTool).default([]),
   registry_files: z.array(z.string()).default([]),
   sources: z.array(McpSrc).default([]),
@@ -236,6 +244,8 @@ export type LoadedCategory = LoadedCollection;
 
 export interface LoadedToolsCategory {
   description?: string;
+  usage?: string;
+  usageOn: "every" | "never";
   registry: InlineToolSource;
   mcpSources: ToolSource[];
 }
@@ -371,6 +381,8 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     collections: cfg.collections.map(buildCollection),
     tools: {
       description: cfg.tools.description,
+      usage: cfg.tools.usage,
+      usageOn: cfg.tools.usage_on ?? "every",
       registry: new InlineToolSource(dedupTools),
       mcpSources: cfg.tools.sources.map((s) => new McpToolSource(s)),
     },

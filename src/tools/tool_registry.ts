@@ -50,7 +50,7 @@ export async function handleToolRegistry(cat: LoadedToolsCategory, input: ToolRe
     const tools = input.verbose ? all.flat() : all.flat().map(compactTool);
     const response: Record<string, unknown> = { tools, count: tools.length };
     if (sourceErrors.length > 0) response.source_errors = sourceErrors;
-    return response;
+    return withUsage(cat, response);
   }
 
   if (!input.name) throw new Error(`action=${input.action} requires 'name'`);
@@ -58,7 +58,8 @@ export async function handleToolRegistry(cat: LoadedToolsCategory, input: ToolRe
   if (input.action === "describe") {
     for (const s of sources) {
       try {
-        return await s.describe(input.name);
+        const entry = await s.describe(input.name);
+        return withUsage(cat, entry as unknown as Record<string, unknown>);
       } catch {
         // try next
       }
@@ -72,7 +73,8 @@ export async function handleToolRegistry(cat: LoadedToolsCategory, input: ToolRe
     try {
       const known = (await s.list()).some((t) => t.name === input.name);
       if (!known) continue;
-      return await s.invoke(input.name, input.input);
+      const result = await s.invoke(input.name, input.input);
+      return withUsage(cat, result as unknown as Record<string, unknown>);
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
     }
@@ -81,13 +83,29 @@ export async function handleToolRegistry(cat: LoadedToolsCategory, input: ToolRe
 }
 
 /**
+ * Attach the tools category's usage directive (if configured) to every
+ * describe/invoke response, unless the category opted out via
+ * `usage_on: never`. Per-tool `usage` from the tool entry takes
+ * precedence over the category-level directive.
+ */
+function withUsage(cat: LoadedToolsCategory, payload: Record<string, unknown>): Record<string, unknown> {
+  const toolUsage = payload["usage"];
+  const usage = typeof toolUsage === "string" ? toolUsage : cat.usage;
+  if (cat.usageOn === "never" || !usage) {
+    const { usage: _, ...rest } = payload;
+    return rest;
+  }
+  return { ...payload, usage };
+}
+
+/**
  * Default tool shape for `list`. Drops the (potentially large) JSON
- * `input_schema` and free-form `metadata` so the agent can hold the
- * whole registry in a few hundred tokens. `describe` returns the full
- * shape including `input_schema` — the agent should call that for the
- * one tool it's about to invoke.
+ * `input_schema`, free-form `metadata`, and per-tool `usage` so the
+ * agent can hold the whole registry in a few hundred tokens. `describe`
+ * returns the full shape including `input_schema` — the agent should
+ * call that for the one tool it's about to invoke.
  */
 function compactTool(t: ToolEntry): ToolEntry {
-  const { input_schema, metadata, ...rest } = t;
+  const { input_schema, metadata, usage, ...rest } = t;
   return rest;
 }

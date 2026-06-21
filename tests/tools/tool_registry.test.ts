@@ -39,8 +39,8 @@ function stubToolSource(
   };
 }
 
-function cat(registry: InlineToolSource, mcp: ToolSource[] = []): LoadedToolsCategory {
-  return { registry, mcpSources: mcp };
+function cat(registry: InlineToolSource, mcp: ToolSource[] = [], opts?: { usage?: string; usageOn?: "every" | "never" }): LoadedToolsCategory {
+  return { registry, mcpSources: mcp, usage: opts?.usage, usageOn: opts?.usageOn ?? "every" };
 }
 
 describe("handleToolRegistry — list", () => {
@@ -117,6 +117,18 @@ describe("handleToolRegistry — list", () => {
     const res = (await handleToolRegistry(cat(reg), { action: "list" })) as { source_errors?: unknown[] };
     expect(res.source_errors).toBeUndefined();
   });
+
+  it("list attaches category-level usage when configured", async () => {
+    const reg = inlineReg([{ type: "command", name: "conftest", command: "x" }]);
+    const res = (await handleToolRegistry(cat(reg, [], { usage: "always validate before PR" }), { action: "list" })) as { usage?: string };
+    expect(res.usage).toBe("always validate before PR");
+  });
+
+  it("list omits usage when usage_on=never", async () => {
+    const reg = inlineReg([{ type: "command", name: "conftest", command: "x" }]);
+    const res = (await handleToolRegistry(cat(reg, [], { usage: "directive", usageOn: "never" }), { action: "list" })) as { usage?: string };
+    expect(res.usage).toBeUndefined();
+  });
 });
 
 describe("handleToolRegistry — describe", () => {
@@ -147,6 +159,25 @@ describe("handleToolRegistry — describe", () => {
   it("throws tool not found when no source has it", async () => {
     const reg = inlineReg([]);
     await expect(handleToolRegistry(cat(reg), { action: "describe", name: "ghost" })).rejects.toThrow(/tool not found: ghost/);
+  });
+
+  it("describe attaches category-level usage when configured", async () => {
+    const reg = inlineReg([{ type: "command", name: "conftest", command: "c", input_schema: { type: "object" } }]);
+    const res = (await handleToolRegistry(cat(reg, [], { usage: "always run before PR" }), { action: "describe", name: "conftest" })) as ToolEntry & { usage?: string };
+    expect(res.usage).toBe("always run before PR");
+    expect(res.input_schema).toEqual({ type: "object" });
+  });
+
+  it("describe per-tool usage overrides category-level usage", async () => {
+    const reg = inlineReg([{ type: "command", name: "conftest", command: "c", usage: "per-tool directive" }]);
+    const res = (await handleToolRegistry(cat(reg, [], { usage: "category directive" }), { action: "describe", name: "conftest" })) as ToolEntry & { usage?: string };
+    expect(res.usage).toBe("per-tool directive");
+  });
+
+  it("describe omits usage when usage_on=never even with per-tool usage", async () => {
+    const reg = inlineReg([{ type: "command", name: "conftest", command: "c", usage: "per-tool" }]);
+    const res = (await handleToolRegistry(cat(reg, [], { usage: "category", usageOn: "never" }), { action: "describe", name: "conftest" })) as { usage?: string };
+    expect(res.usage).toBeUndefined();
   });
 });
 
@@ -180,5 +211,26 @@ describe("handleToolRegistry — invoke", () => {
     await expect(
       handleToolRegistry(cat(reg), { action: "invoke", name: "ghost", input: {} }),
     ).rejects.toThrow(/tool not found: ghost/);
+  });
+
+  it("invoke attaches category-level usage when configured", async () => {
+    const reg = inlineReg([]);
+    const mcp = stubToolSource("remote", {
+      tools: [{ name: "external", source: "remote" }],
+      invokeResult: { ok: true, stdout: "ran", exit_code: 0 },
+    });
+    const res = (await handleToolRegistry(cat(reg, [mcp], { usage: "validate before using" }), { action: "invoke", name: "external", input: {} })) as { usage?: string; ok: boolean };
+    expect(res.usage).toBe("validate before using");
+    expect(res.ok).toBe(true);
+  });
+
+  it("invoke omits usage when usage_on=never", async () => {
+    const reg = inlineReg([]);
+    const mcp = stubToolSource("remote", {
+      tools: [{ name: "ext", source: "remote" }],
+      invokeResult: { ok: true },
+    });
+    const res = (await handleToolRegistry(cat(reg, [mcp], { usage: "directive", usageOn: "never" }), { action: "invoke", name: "ext", input: {} })) as { usage?: string };
+    expect(res.usage).toBeUndefined();
   });
 });

@@ -285,6 +285,34 @@ describe("handleContent — get", () => {
     expect(res.truncated).toBe(true);
     expect(res.content!.startsWith("## Big")).toBe(true);
   });
+
+  it("etag match returns unchanged:true without content", async () => {
+    const c = collection({ sources: [stubSource({ id: "s1" })] });
+    const sha256 = createHash("sha256").update("# D1\nbody of d1", "utf8").digest("hex");
+    const res = (await handleContent(c, { action: "get", name: "d1.md", etag: sha256 })) as { unchanged?: boolean; sha256?: string; content?: unknown };
+    expect(res.unchanged).toBe(true);
+    expect(res.sha256).toBe(sha256);
+    expect(res.content).toBeUndefined();
+  });
+
+  it("etag mismatch returns full content with sha256", async () => {
+    const c = collection({ sources: [stubSource({ id: "s1" })] });
+    const res = (await handleContent(c, { action: "get", name: "d1.md", etag: "wronghash" })) as { unchanged?: boolean; sha256?: string; content?: unknown };
+    expect(res.unchanged).toBeUndefined();
+    expect(res.content).toBe("# D1\nbody of d1");
+    expect(res.sha256).toBe(createHash("sha256").update("# D1\nbody of d1", "utf8").digest("hex"));
+  });
+
+  it("etag reflects section content (not full original)", async () => {
+    const md = `# Top\nintro\n## Tag\ntag body\n## Other\nother\n`;
+    const c = collection({
+      sources: [stubSource({ id: "s", items: [{ name: "x.md", source: "s", content_type: "text/markdown", content: md }] })],
+    });
+    const sectionContent = "## Tag\ntag body";
+    const sectionSha = createHash("sha256").update(sectionContent, "utf8").digest("hex");
+    const res = (await handleContent(c, { action: "get", name: "x.md", section: "tag", etag: sectionSha })) as { unchanged?: boolean };
+    expect(res.unchanged).toBe(true);
+  });
 });
 
 describe("handleContent — empty collection", () => {

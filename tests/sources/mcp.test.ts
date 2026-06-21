@@ -72,4 +72,20 @@ describe("McpToolSource", () => {
     expect(result.ok).toBe(false);
     expect(result.stdout).toMatch(/unknown tool/);
   });
+
+  it("caches list results across calls (no redundant subprocess calls)", async () => {
+    const src = new McpToolSource({ type: "mcp", name: "test-tools", cache_ttl_ms: 10_000, ...SPAWN });
+    const first = await src.list();
+    const second = await src.list();
+    expect(second).toEqual(first);
+    expect(second).toHaveLength(2);
+  });
+
+  it("McpResourceSource also caches list results", async () => {
+    const src = new McpResourceSource({ type: "mcp", name: "test-rsrc", cache_ttl_ms: 10_000, ...SPAWN });
+    const first = await src.list();
+    const second = await src.list();
+    expect(second).toEqual(first);
+    expect(second).toHaveLength(2);
+  });
 });

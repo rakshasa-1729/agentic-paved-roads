@@ -377,8 +377,9 @@ curl -sN -X POST localhost:8080/mcp \
   latency — useful for debugging "why does the MCP see stale data?" during
   deploy validation or incident triage.
 - **Scaling**: read-heavy, mostly cached behind the github source's
-  60-second tree cache. A single instance handles 100+ concurrent dev
-  sessions comfortably.
+  60-second tree cache and MCP source's per-source list cache (also
+  60 s by default, configurable via `cache_ttl_ms`). A single instance
+  handles 100+ concurrent dev sessions comfortably.
 
 ---
 

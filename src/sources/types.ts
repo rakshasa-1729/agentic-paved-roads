@@ -28,6 +28,7 @@ export interface ToolEntry {
   description?: string;
   input_schema?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  usage?: string;
 }
 
 export interface ToolInvokeResult {

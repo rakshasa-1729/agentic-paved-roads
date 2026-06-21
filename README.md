@@ -277,6 +277,7 @@ host environment, not the config file.
 { "action": "get",  "name": "big.md", "section": "Tagging" }
 { "action": "get",  "name": "big.md", "max_bytes": 2000 }
 { "action": "get",  "name": "big.md", "section": "Tagging", "max_bytes": 2000 }
+{ "action": "get",  "name": "big.md", "etag": "<sha256>" }          // skip body if unchanged
 
 // tool_registry
 { "action": "list" }                              // compact by default (name/source/description)
@@ -317,6 +318,22 @@ And on `get`:
   and append a `[truncated]` marker. Pair `section` + `max_bytes` to
   page through a large doc. The response includes a `sha256` hex digest of
   the delivered content (after section/truncation).
+- `etag` — if the agent already has content with a known sha256, pass it
+  here; if the server's content matches, it returns `{unchanged: true}`
+  with no body — saving context budget on re-fetches.
+
+`tool_registry(list)` returns a compact shape by default (`name`,
+`source`, `description` only) — pass `verbose: true` to pull
+`input_schema` + `metadata`, or call `describe` for the one tool the
+agent is about to invoke. Keeping the default `list` cheap lets the
+agent hold the whole registry in a few hundred tokens.
+
+`tool_registry(describe)` and `tool_registry(invoke)` optionally attach a
+`usage` directive when `tools.usage` is configured in the security config
+— works like the per-collection usage but for tool responses. Per-tool
+`usage` on individual tool descriptors overrides the category-level
+directive. Use `tools.usage_on: never` to suppress (e.g. when the
+directive is already in the tool description).
 
 `tool_registry(list)` returns a compact shape by default (`name`,
 `source`, `description` only) — pass `verbose: true` to pull

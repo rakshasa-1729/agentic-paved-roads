@@ -6,6 +6,7 @@ import { abortableFetch } from "../util/timeout.js";
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 const DEFAULT_HTTP_TOOL_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_MAX_BYTES = 1024 * 1024; // 1 MiB per stream
+const DEFAULT_HTTP_OUTPUT_MAX_BYTES = 512 * 1024; // 512 KiB for HTTP tools
 // Grace period between SIGTERM and SIGKILL for a child that ignores
 // graceful shutdown.
 const KILL_GRACE_MS = 5_000;
@@ -22,6 +23,9 @@ export interface CommandToolConfig {
   input_schema?: Record<string, unknown>;
   command_timeout_ms?: number;
   output_max_bytes?: number;
+  usage?: string;
+  validate_command?: string;
+  validate_args?: string[];
 }
 
 export interface HttpToolConfig {
@@ -34,6 +38,8 @@ export interface HttpToolConfig {
   body_template?: unknown;
   input_schema?: Record<string, unknown>;
   timeout_ms?: number;
+  usage?: string;
+  output_max_bytes?: number;
 }
 
 export type InlineToolConfig = CommandToolConfig | HttpToolConfig;
@@ -49,6 +55,7 @@ export class InlineToolSource implements ToolSource {
       description: t.description,
       input_schema: t.input_schema,
       metadata: { type: t.type },
+      usage: t.usage,
     }));
     if (!query) return all;
     const q = query.toLowerCase();
@@ -64,6 +71,7 @@ export class InlineToolSource implements ToolSource {
       description: tool.description,
       input_schema: tool.input_schema,
       metadata: { type: tool.type },
+      usage: tool.usage,
     };
   }
 
@@ -74,17 +82,40 @@ export class InlineToolSource implements ToolSource {
     return this.runHttp(tool, input);
   }
 
-  private runCommand(cfg: CommandToolConfig, input: unknown): Promise<ToolInvokeResult> {
-    return new Promise((resolveResult) => {
-      const args = (cfg.args ?? []).map((a) => renderTemplate(interpolateEnv(a), input));
-      const command = interpolateEnv(cfg.command);
-      const env = {
+  private async runCommand(cfg: CommandToolConfig, input: unknown): Promise<ToolInvokeResult> {
+    if (cfg.validate_command) {
+      const valArgs = (cfg.validate_args ?? []).map((a) => renderTemplate(interpolateEnv(a), input));
+      const valCmd = interpolateEnv(cfg.validate_command);
+      const valEnv = {
         ...process.env,
         ...Object.fromEntries(Object.entries(cfg.env ?? {}).map(([k, v]) => [k, interpolateEnv(v)])),
       };
-      const timeoutMs = cfg.command_timeout_ms ?? DEFAULT_COMMAND_TIMEOUT_MS;
-      const maxBytes = cfg.output_max_bytes ?? DEFAULT_OUTPUT_MAX_BYTES;
+      const validator = spawn(valCmd, valArgs, { cwd: cfg.cwd, env: valEnv });
+      const valOut = new CappedBuffer(10_240);
+      const valErr = new CappedBuffer(10_240);
+      validator.stdout.on("data", (d: Buffer) => valOut.push(d));
+      validator.stderr.on("data", (d: Buffer) => valErr.push(d));
+      const valCode: number | null = await new Promise((r) => validator.on("close", r));
+      if (valCode !== 0) {
+        return {
+          ok: false,
+          error: `validation failed: ${valErr.toString() || valOut.toString()}`,
+          stdout: valOut.toString(),
+          stderr: valErr.toString(),
+        };
+      }
+    }
 
+    const args = (cfg.args ?? []).map((a) => renderTemplate(interpolateEnv(a), input));
+    const command = interpolateEnv(cfg.command);
+    const env = {
+      ...process.env,
+      ...Object.fromEntries(Object.entries(cfg.env ?? {}).map(([k, v]) => [k, interpolateEnv(v)])),
+    };
+    const timeoutMs = cfg.command_timeout_ms ?? DEFAULT_COMMAND_TIMEOUT_MS;
+    const maxBytes = cfg.output_max_bytes ?? DEFAULT_OUTPUT_MAX_BYTES;
+
+    return new Promise((resolveResult) => {
       const child = spawn(command, args, { cwd: cfg.cwd, env });
       const stdout = new CappedBuffer(maxBytes);
       const stderr = new CappedBuffer(maxBytes);
@@ -153,15 +184,20 @@ export class InlineToolSource implements ToolSource {
       headers["content-type"] ??= "application/json";
     }
     const timeoutMs = cfg.timeout_ms ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS;
+    const maxBytes = cfg.output_max_bytes ?? DEFAULT_HTTP_OUTPUT_MAX_BYTES;
     try {
       const res = await abortableFetch(url, { method, headers, body }, timeoutMs, cfg.name);
       const ct = res.headers.get("content-type") ?? "";
       const data = ct.includes("application/json") ? await res.json() : await res.text();
+      let stdout = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      if (stdout.length > maxBytes) {
+        stdout = stdout.slice(0, maxBytes) + `\n… [truncated ${stdout.length - maxBytes} bytes]`;
+      }
       return {
         ok: res.ok,
         status: res.status,
         data,
-        stdout: typeof data === "string" ? data : JSON.stringify(data, null, 2),
+        stdout,
       };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

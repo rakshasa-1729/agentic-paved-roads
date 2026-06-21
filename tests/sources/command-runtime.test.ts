@@ -89,3 +89,40 @@ describe("command tool: stdout/stderr size cap", () => {
     expect(result.stdout).not.toMatch(/truncated/);
   });
 });
+
+describe("command tool: pre-invoke validation hook", () => {
+  it("runs the main command when the validator exits 0", async () => {
+    const src = new InlineToolSource([
+      {
+        type: "command",
+        name: "safe",
+        command: "sh",
+        args: ["-c", "echo ok"],
+        validate_command: "sh",
+        validate_args: ["-c", "exit 0"],
+        command_timeout_ms: 5_000,
+      },
+    ]);
+    const result = await src.invoke("safe", {});
+    expect(result.ok).toBe(true);
+    expect(result.stdout?.trim()).toBe("ok");
+  });
+
+  it("blocks the main command when the validator exits non-zero", async () => {
+    const src = new InlineToolSource([
+      {
+        type: "command",
+        name: "blocked",
+        command: "sh",
+        args: ["-c", "echo should-not-run"],
+        validate_command: "sh",
+        validate_args: ["-c", "echo validation error && exit 1"],
+        command_timeout_ms: 5_000,
+      },
+    ]);
+    const result = await src.invoke("blocked", {});
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/validation failed/);
+    expect(result.stdout).toMatch(/validation error/);
+  });
+});

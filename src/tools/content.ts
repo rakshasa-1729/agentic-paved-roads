@@ -21,6 +21,7 @@ export const ContentInputSchema = z.object({
   refresh: z.boolean().optional().describe("(list) bypass source caches and re-fetch fresh data; use after a merge/deploy to see live content"),
   section: z.string().optional().describe("(get) for markdown/text, return only the body under the heading whose text matches this substring (case-insensitive); the heading line is included"),
   max_bytes: z.number().int().positive().optional().describe("(get) truncate the returned content to at most this many characters and append a [truncated] marker; pair with section to page through a large doc"),
+  etag: z.string().optional().describe("(get) sha256 the agent already has; if it matches the current content the server returns {unchanged:true} instead of the full body — saves context budget when re-fetching known content"),
 });
 
 export type ContentInput = z.infer<typeof ContentInputSchema>;
@@ -42,6 +43,7 @@ export const contentJsonSchema = {
     refresh: { type: "boolean", description: "(list) bypass source caches; use after a merge to see live content" },
     section: { type: "string", description: "(get) return only a markdown/text section by heading" },
     max_bytes: { type: "integer", minimum: 1, description: "(get) truncate content to at most N chars" },
+    etag: { type: "string", description: "(get) sha256 the agent already has; if it matches, returns {unchanged:true}" },
   },
   required: ["action"],
   additionalProperties: false,
@@ -138,7 +140,11 @@ export async function handleContent(collection: LoadedCollection, input: Content
       extra.truncated = true;
       extra.content_chars = original.length;
     }
-    extra.sha256 = createHash("sha256").update(content, "utf8").digest("hex");
+    const sha256 = createHash("sha256").update(content, "utf8").digest("hex");
+    extra.sha256 = sha256;
+    if (input.etag === sha256) {
+      return withUsage(collection, { name: item.name, source: item.source, sha256, unchanged: true, note: "content unchanged since previous get" });
+    }
     const payload: Record<string, unknown> = { ...item, content };
     for (const [k, v] of Object.entries(extra)) payload[k] = v;
     return withUsage(collection, payload);

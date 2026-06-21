@@ -118,12 +118,20 @@ tools:
     #       duration_hours: { type: number }
     #     required: [repo, rule, justification]
 
+  # Optional: tool-level usage directive attached to describe/invoke responses
+  # usage: "always validate output before applying"
+  # usage_on: every                   # every | never; default every
+  #
+  # Per-tool usage overrides the category-level directive:
+  # - type: command
+  #   name: conftest
+  #   ...
+  #   usage: "run this before every PR"
+  #   validate_command: sh
+  #   validate_args: ["-c", "test -f {{policy_path}}"]
+  #   output_max_bytes: 524288       # truncate large outputs (default 1 MiB)
+  #
   # Additional tools can come from other MCP servers:
-  # sources:
-  #   - type: mcp
-  #     name: kubectl-mcp
-  #     command: npx
-  #     args: ["-y", "@your-org/kubectl-mcp"]
 
 # ─── Auth ───────────────────────────────────────────────────────────
 # Pick one mode. The principal extracted is recorded on every audit

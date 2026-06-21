@@ -13,6 +13,16 @@ export interface McpSourceConfig {
   args?: string[];
   env?: Record<string, string>;
   connect_timeout_ms?: number;
+  cache_ttl_ms?: number;
+  output_max_bytes?: number;
+}
+
+const DEFAULT_CACHE_TTL_MS = 60_000;
+const DEFAULT_OUTPUT_MAX_BYTES = 512 * 1024;
+
+interface CacheEntry<T> {
+  data: T;
+  ts: number;
 }
 
 class McpClientHolder {
@@ -61,13 +71,23 @@ class McpClientHolder {
 export class McpResourceSource implements Source {
   readonly id: string;
   private readonly holder: McpClientHolder;
+  private readonly cacheTtlMs: number;
+  private listCache?: CacheEntry<Item[]>;
 
   constructor(cfg: McpSourceConfig) {
     this.id = cfg.name ?? `mcp:${cfg.command}`;
     this.holder = new McpClientHolder(cfg, this.id);
+    this.cacheTtlMs = cfg.cache_ttl_ms ?? DEFAULT_CACHE_TTL_MS;
   }
 
   async list(query?: string): Promise<Item[]> {
+    const now = Date.now();
+    if (this.listCache && now - this.listCache.ts < this.cacheTtlMs) {
+      const items = this.listCache.data;
+      if (!query) return items;
+      const q = query.toLowerCase();
+      return items.filter((i) => i.name.toLowerCase().includes(q) || (i.title ?? "").toLowerCase().includes(q));
+    }
     const client = await this.holder.connect();
     const res = await client.listResources();
     const items: Item[] = (res.resources ?? []).map((r) => ({
@@ -78,6 +98,7 @@ export class McpResourceSource implements Source {
       uri: r.uri,
       content_type: r.mimeType,
     }));
+    this.listCache = { data: items, ts: now };
     if (!query) return items;
     const q = query.toLowerCase();
     return items.filter((i) => i.name.toLowerCase().includes(q) || (i.title ?? "").toLowerCase().includes(q));
@@ -107,13 +128,23 @@ export class McpResourceSource implements Source {
 export class McpToolSource implements ToolSource {
   readonly id: string;
   private readonly holder: McpClientHolder;
+  private readonly cacheTtlMs: number;
+  private listCache?: CacheEntry<ToolEntry[]>;
 
   constructor(cfg: McpSourceConfig) {
     this.id = cfg.name ?? `mcp:${cfg.command}`;
     this.holder = new McpClientHolder(cfg, this.id);
+    this.cacheTtlMs = cfg.cache_ttl_ms ?? DEFAULT_CACHE_TTL_MS;
   }
 
   async list(query?: string): Promise<ToolEntry[]> {
+    const now = Date.now();
+    if (this.listCache && now - this.listCache.ts < this.cacheTtlMs) {
+      const entries = this.listCache.data;
+      if (!query) return entries;
+      const q = query.toLowerCase();
+      return entries.filter((e) => e.name.toLowerCase().includes(q) || (e.description ?? "").toLowerCase().includes(q));
+    }
     const client = await this.holder.connect();
     const res = await client.listTools();
     const entries = (res.tools ?? []).map((t) => ({
@@ -122,6 +153,7 @@ export class McpToolSource implements ToolSource {
       description: t.description,
       input_schema: t.inputSchema as Record<string, unknown> | undefined,
     }));
+    this.listCache = { data: entries, ts: now };
     if (!query) return entries;
     const q = query.toLowerCase();
     return entries.filter((e) => e.name.toLowerCase().includes(q) || (e.description ?? "").toLowerCase().includes(q));
@@ -139,9 +171,13 @@ export class McpToolSource implements ToolSource {
     try {
       const res = await client.callTool({ name, arguments: (input ?? {}) as Record<string, unknown> });
       const content = (res.content ?? []) as Array<Record<string, unknown>>;
-      const text = content
+      let text = content
         .map((c) => (typeof c.text === "string" ? c.text : JSON.stringify(c)))
         .join("\n");
+      const maxBytes = DEFAULT_OUTPUT_MAX_BYTES;
+      if (text.length > maxBytes) {
+        text = text.slice(0, maxBytes) + `\n… [truncated ${text.length - maxBytes} bytes]`;
+      }
       return { ok: !res.isError, stdout: text, data: res };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
