@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -164,13 +166,44 @@ async function serveHttp(
     });
   }
 
-  let app = buildHttpAppForCfg(currentCfg, currentAudit);
-  currentServer = await new Promise<HttpServer>((resolve) => {
-    const s = app.listen(port, host, () => {
-      logStarted(currentCfg, currentMaterialized, policiesCacheDir, `http :${port}`, configPath);
-      resolve(s);
+  /** Build https.createServer options from the TLS config. Returns
+   * undefined when TLS is not configured (caller uses plain HTTP). */
+  function buildTlsOptions(tls: LoadedConfig["tlsConfig"]): Record<string, unknown> | undefined {
+    if (!tls) return undefined;
+    try {
+      return {
+        cert: readFileSync(tls.cert),
+        key: readFileSync(tls.key),
+        ca: tls.ca ? readFileSync(tls.ca) : undefined,
+        requestCert: tls.request_cert,
+        rejectUnauthorized: tls.reject_unauthorized,
+      };
+    } catch (err) {
+      log("error", "tls.cert_read_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+
+  /** Listen on port/host — HTTPS when TLS is configured, HTTP otherwise. */
+  function listenWithApp(app: import("express").Express, tls: LoadedConfig["tlsConfig"]): Promise<HttpServer> {
+    const tlsOpts = buildTlsOptions(tls);
+    return new Promise((resolve, reject) => {
+      if (tlsOpts) {
+        const httpsServer = createHttpsServer(tlsOpts as Parameters<typeof createHttpsServer>[0], app);
+        httpsServer.on("error", reject);
+        const s = httpsServer.listen(port, host, () => resolve(s as HttpServer));
+      } else {
+        const s = app.listen(port, host, () => resolve(s));
+        s.on("error", reject);
+      }
     });
-  });
+  }
+
+  let app = buildHttpAppForCfg(currentCfg, currentAudit);
+  currentServer = await listenWithApp(app, currentCfg.tlsConfig);
+  logStarted(currentCfg, currentMaterialized, policiesCacheDir, `http${currentCfg.tlsConfig ? "s" : ""} :${port}`, configPath);
 
   // SIGHUP: hot-reload the config without restarting the process.
   process.on("SIGHUP", async () => {
@@ -203,14 +236,14 @@ async function serveHttp(
       const newApp = buildHttpAppForCfg(newCfg, newAudit);
 
       // Graceful swap: close the old server (drains in-flight requests)
-      // then start the new one.
+      // then start the new one. TLS config changes (new cert, new CA)
+      // are picked up here too — buildTlsOptions re-reads the files.
       await new Promise<void>((resolve) => currentServer.close(() => resolve()));
-      currentServer = newApp.listen(port, host, () => {
-        log("info", "server.reloaded", {
-          transport: `http :${port}`,
-          collections: newCfg.collections.map((c: LoadedConfig["collections"][number]) => c.name),
-          materialized: newMaterialized,
-        });
+      currentServer = await listenWithApp(newApp, newCfg.tlsConfig);
+      log("info", "server.reloaded", {
+        transport: `http${newCfg.tlsConfig ? "s" : ""} :${port}`,
+        collections: newCfg.collections.map((c: LoadedConfig["collections"][number]) => c.name),
+        materialized: newMaterialized,
       });
 
       currentCfg = newCfg;

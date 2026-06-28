@@ -397,6 +397,7 @@ src/
     iap.ts              # trusted-header auth (e.g. Cloud IAP)
     oidc.ts             # Bearer JWT verification (issuer + audience, JWKS discovery)
     api_key.ts          # static key auth (constant-time, header-configurable)
+    mtls.ts             # mTLS auth — extract principal from client cert CN
   util/
     env.ts              # ${ENV_VAR} interpolation
     timeout.ts          # abortableFetch + withTimeout helpers

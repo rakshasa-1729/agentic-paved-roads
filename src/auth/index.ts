@@ -4,6 +4,7 @@ import type { AuthConfigType } from "../config.js";
 import { iapMiddleware } from "./iap.js";
 import { oidcMiddleware } from "./oidc.js";
 import { apiKeyMiddleware } from "./api_key.js";
+import { mtlsMiddleware } from "./mtls.js";
 import { authAttempts } from "../metrics.js";
 
 /**
@@ -18,6 +19,8 @@ import { authAttempts } from "../metrics.js";
  *             configured issuer + audience using a remote JWKS.
  *   api_key — validate a shared secret from a configured header
  *             against keys in an environment variable.
+ *   mtls    — extract the principal from the verified client cert's
+ *             subject CN. Requires `tls` config for the HTTPS listener.
  *
  * On success the middleware sets the authenticated principal in
  * AsyncLocalStorage (via withPrincipal) so subsequent log lines and
@@ -38,6 +41,8 @@ export function buildAuthMiddleware(cfg: AuthConfigType): RequestHandler {
       return oidcMiddleware(cfg);
     case "api_key":
       return apiKeyMiddleware(cfg);
+    case "mtls":
+      return mtlsMiddleware();
   }
 }
 

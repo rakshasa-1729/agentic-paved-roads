@@ -67,6 +67,11 @@ ship out of the box, selected by the `auth.mode` config field:
   pairs (bare keys use the key itself as the principal). Constant-time
   comparison; no network calls. Good for service-to-service or CI bot
   scenarios where a full IdP is overkill.
+- `mtls` — mutual TLS: the server presents a certificate and verifies
+  each client's certificate against a configured CA bundle. The
+  principal is extracted from the client cert's subject CN (falls back
+  to O). Requires the `tls` config section; the TLS layer rejects
+  unauthorized peers before they reach Express.
 - `none` — no auth (development / behind a closed network only).
 
 Whichever mode you pick, the authenticated principal is recorded on
@@ -76,6 +81,35 @@ every `tool.invoked` audit log line.
 the `/metrics` endpoint requires the same authentication. Set
 `metrics_protect: false` to expose `/metrics` without auth (useful when
 a scrape proxy handles its own ACL).
+
+**TLS transport**: when a `tls` section is present in the config, the
+HTTP listener runs as an HTTPS server (`https.createServer`). This
+enables:
+
+- Server-side TLS (cert + key presented to clients).
+- Optional client-cert verification against a CA bundle
+  (`request_cert` + `reject_unauthorized`, both default `true`).
+- SIGHUP re-reads the cert files, so cert rotation works without a
+  full restart.
+
+mTLS can be used alone (`auth.mode: mtls`) or combined with another
+auth mode (e.g. `api_key` on top of TLS) for defense in depth. When
+combined, the TLS layer handles transport security and the application
+auth mode still runs on every request.
+
+```yaml
+# Transport: mutual TLS
+
+tls:
+  cert: /etc/security-mcp/server.crt
+  key:  /etc/security-mcp/server.key
+  ca:   /etc/security-mcp/ca.crt
+  request_cert: true
+  reject_unauthorized: true
+
+auth:
+  mode: mtls
+```
 
 ---
 
@@ -226,6 +260,7 @@ typical MCP sessions but long-lived connections will reconnect.
 | Cognito (Function URL)             | n/a       | ✅     | Either IAP-style (Cognito injects a header) or `oidc` mode against the user pool's issuer. |
 | OIDC bearer (any provider)         | ✅        | ✅     | `auth: { mode: oidc, issuer: https://accounts.google.com, audience: <aud> }` |
 | API key (static, constant-time)    | ✅        | ✅     | `auth: { mode: api_key, header_name: X-API-Key, keys_env: SECURITY_MCP_API_KEYS }` |
+| mTLS (client cert verified at TLS) | ✅       | ✅     | `tls: { cert: …, key: …, ca: … }` + `auth: { mode: mtls }` |
 | None (dev only)                    | ⚠         | ⚠      | `auth: { mode: none }`. Don't put this in front of anyone real. |
 
 **Sample OIDC config** (Google as IdP, devs use `gcloud auth print-identity-token`):

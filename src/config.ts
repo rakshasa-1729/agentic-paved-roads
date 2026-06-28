@@ -200,8 +200,34 @@ const AuthApiKey = z.object({
   header_name: z.string().default("X-API-Key"),
   keys_env: z.string().default("SECURITY_MCP_API_KEYS"),
 });
-const AuthConfig = z.discriminatedUnion("mode", [AuthNone, AuthIap, AuthOidc, AuthApiKey]);
+
+/**
+ * mTLS auth mode: extract the principal from the verified client
+ * certificate's subject CN. Requires the `tls` config section — without
+ * it, no client cert is presented. The TLS layer rejects unauthorized
+ * peers before the application sees them; the middleware extracts the
+ * principal from the ones that made it through.
+ */
+const AuthMtls = z.object({ mode: z.literal("mtls") });
+
+const AuthConfig = z.discriminatedUnion("mode", [AuthNone, AuthIap, AuthOidc, AuthApiKey, AuthMtls]);
 export type AuthConfigType = z.infer<typeof AuthConfig>;
+
+/**
+ * TLS transport config. When set, `serveHttp` runs as an HTTPS server
+ * (`https.createServer`) and optionally verifies client certificates
+ * against the provided CA bundle. Use with `auth.mode: mtls` for
+ * cert-based principal extraction, or with any other auth mode for
+ * defense-in-depth.
+ */
+const TlsConfig = z.object({
+  cert: z.string(),
+  key: z.string(),
+  ca: z.string().optional(),
+  request_cert: z.boolean().default(true),
+  reject_unauthorized: z.boolean().default(true),
+});
+export type TlsConfigType = z.infer<typeof TlsConfig>;
 
 export const ConfigSchema = z.object({
   server: ServerInfo.default({}),
@@ -215,6 +241,10 @@ export const ConfigSchema = z.object({
    * preventing sensitive input from leaking into the audit trail. */
   audit_record_args: z.boolean().default(false),
   metrics_protect: z.boolean().default(true),
+  /** TLS transport: enable HTTPS + optional client-cert verification.
+   * When set, serveHttp runs as https.createServer. Paths are relative
+   * to the config file (resolved at load time). */
+  tls: TlsConfig.optional(),
   rate_limit: z
     .object({
       window_ms: z.number().int().positive().default(60_000),
@@ -270,6 +300,8 @@ export interface LoadedConfig {
   auditLogPath?: string;
   auditRecordArgs?: boolean;
   metrics_protect?: boolean;
+  /** TLS config (resolved paths). When set, serveHttp uses HTTPS. */
+  tlsConfig?: { cert: string; key: string; ca?: string; request_cert: boolean; reject_unauthorized: boolean };
   rateLimit?: { window_ms: number; max_requests: number };
   rbac?: {
     default_allow: boolean;
@@ -407,6 +439,15 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     auditLogPath: cfg.audit_log ? resolvePath(cfg.audit_log) : undefined,
     auditRecordArgs: cfg.audit_record_args,
     metrics_protect: cfg.metrics_protect,
+    tlsConfig: cfg.tls
+      ? {
+          cert: resolvePath(cfg.tls.cert),
+          key: resolvePath(cfg.tls.key),
+          ca: cfg.tls.ca ? resolvePath(cfg.tls.ca) : undefined,
+          request_cert: cfg.tls.request_cert,
+          reject_unauthorized: cfg.tls.reject_unauthorized,
+        }
+      : undefined,
     rateLimit: cfg.rate_limit,
     rbac: cfg.rbac
       ? {

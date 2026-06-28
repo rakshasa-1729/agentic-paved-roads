@@ -153,7 +153,19 @@ tools:
 #                                     #   key:principal pairs (or bare keys)
 #
 # auth:
+#   mode: mtls                       # mutual TLS — extract principal from
+#                                     # client cert CN. Requires `tls` section.
+#
+# auth:
 #   mode: none                       # dev / closed network only
+
+# ─── TLS transport (optional) ─────────────────────────────────────
+# tls:
+#   cert: /etc/security-mcp/server.crt   # server certificate (PEM)
+#   key:  /etc/security-mcp/server.key    # server private key (PEM)
+#   ca:   /etc/security-mcp/ca.crt        # CA bundle for verifying client certs
+#   request_cert: true                    # request client cert (default true)
+#   reject_unauthorized: true             # reject unauthorized peers (default true)
 
 # ─── Metrics endpoint protection ───────────────────────────────────
 # metrics_protect: true              # /metrics requires auth when mode≠none
