@@ -22,6 +22,7 @@ collections that map to the typical platform-team responsibilities:
 | `risk_index`      | `list` / `get` risk-context docs                     | file / http / github / mcp |
 | `paved_road_tool` | `list` / `get` paved-road references                 | file / http / github / mcp |
 | `tool_registry`   | `list` / `describe` / `invoke` registered tools      | inline (command/http) + mcp |
+| `select_guidance` | pick which items apply to a task (optional; see [Guidance selector](#guidance-selector-optional)) | TypeSafe Jev |
 
 Each collection accepts an array of sources, so you can mix a local
 repo of markdown with a central HTTP policy service and another team's
@@ -341,6 +342,81 @@ directive is already in the tool description).
 agent is about to invoke. Keeping the default `list` cheap lets the
 agent hold the whole registry in a few hundred tokens.
 
+## Guidance selector (optional)
+
+Instead of making the agent read every `list` and guess what's
+relevant, you can have a decision model pick for it. With a `selector`
+block configured, the server registers a `select_guidance` tool backed
+by [TypeSafe's Jev](https://docs.typesafe.ai/introduction/coding-agents),
+a model that answers typed questions with calibrated probabilities
+rather than generating text.
+
+```yaml
+selector:
+  api_key: "${TYPESAFE_API_KEY}"   # default; omit to use it
+  model: jev-latest
+  timeout_ms: 5000
+  include_content: false           # true = inline the picked items' bodies
+  collections:
+    - name: paved_road_tool
+      mode: pick_one               # the single highest-probability item, or none
+      min_confidence: 0.6          # below this, return ranked candidates instead
+      top_k: 3
+    - name: policy_tool
+      mode: pick_all               # every item whose probability >= threshold
+      threshold: 0.5
+```
+
+Use `pick_one` where exactly one answer makes sense (a template, a
+reference architecture) and `pick_all` where several can apply at once
+(policies). `pick_one` sends one Choice question with a `none_of_these`
+option, so unrelated tasks don't get forced onto an item. `pick_all`
+sends one yes/no question per item. Every question goes in a single
+request.
+
+```jsonc
+// input
+{ "task": "add an S3 bucket for invoice PDFs", "context": { "repo": "billing", "language": "terraform" } }
+
+// output (abridged)
+{
+  "results": {
+    "paved_road_tool": { "mode": "pick_one", "reason": "confident", "confidence": 0.84,
+                         "pick": { "name": "terraform-modules", "items": ["terraform-modules.md"] },
+                         "ranked": [{ "name": "terraform-modules", "p": 0.9 }, …] },
+    "policy_tool":     { "mode": "pick_all", "threshold": 0.5, "considered": 2,
+                         "applies": [{ "name": "tagging", "items": ["tagging.md", "tagging.rego"], "p": 0.91 }] }
+  },
+  "next": ["paved_road_tool(action=get, name=terraform-modules.md)", "policy_tool(action=get, name=tagging.md)"]
+}
+```
+
+How it behaves:
+
+- **Candidates:** items that differ only by extension (`tagging.md` +
+  `tagging.rego`) count as one candidate. Each is described to Jev by the
+  item's `description`, or else by the first heading and paragraph of its
+  markdown (or the leading comment block of code files). These summaries
+  are cached for five minutes.
+- **Fails open:** if Jev times out or errors, or the key is missing, each
+  collection comes back with an `error` and a `fallback` telling the agent
+  to use `action=list`. It is not a tool error. 429 and 529 responses are
+  retried within `timeout_ms`. Outcomes are counted in
+  `security_mcp_selector_requests_total{outcome=ok|partial|error}`.
+- **Limits:** `pick_one` supports up to 254 items per collection (Jev's
+  255-option limit, minus `none_of_these`), and `pick_all` up to 255.
+  Larger collections return a fallback for that collection only.
+- **RBAC:** the tool is subject to tool-level `rbac`, and it only covers
+  collections the caller may read under `rbac.collections`.
+
+> **Data egress.** The `task` text, the optional `context`, and each
+> candidate's name and summary are sent to `api.typesafe.ai`. Leave
+> `selector` unset if that isn't acceptable for your org. The audit log
+> hashes the task like any other argument unless `audit_record_args` is on.
+
+`security-mcp doctor --probe` reports whether the selector's key resolved,
+without calling the API.
+
 ## Agent prompt — making it actually fire
 
 Drop something like this in your repo's `AGENTS.md` / `CLAUDE.md` so
@@ -350,6 +426,10 @@ the agent calls into the MCP without needing to be reminded:
 > and `risk_index(list, query=<feature>)`. Prefer items from
 > `paved_road_tool(list)`. Validate with `tool_registry(invoke,
 > name=conftest, …)` before opening a PR.
+
+If `select_guidance` is configured, start with it instead:
+`select_guidance(task=<what you're about to do>)`, then `get` the items
+it returns.
 
 For stronger enforcement, set a per-collection `usage` field — it gets
 attached to every `list`/`get` response, so the model sees the
@@ -392,6 +472,10 @@ src/
   tools/
     content.ts          # generic collection handler (list/get + context-frugal knobs)
     tool_registry.ts    # tool registry handler (list/describe/invoke, compact list)
+    select_guidance.ts  # optional decision-model tool (input schema + handler)
+  selector/
+    index.ts            # candidate catalog, question building, pick_one / pick_all
+    typesafe.ts         # TypeSafe System One HTTP client (retries 429/529)
   auth/
     index.ts            # buildAuthMiddleware dispatch + JSON-RPC 401
     iap.ts              # trusted-header auth (e.g. Cloud IAP)
