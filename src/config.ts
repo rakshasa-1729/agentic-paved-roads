@@ -12,6 +12,9 @@ import { GitLabSource } from "./sources/gitlab.js";
 import { OpaBundleSource } from "./sources/opa-bundle.js";
 import { LocalCmdSource } from "./sources/local-cmd.js";
 import { InlineToolSource } from "./sources/command.js";
+import { GuidanceSelector } from "./selector/index.js";
+import { TypeSafeClient } from "./selector/typesafe.js";
+import { interpolateEnv } from "./util/env.js";
 import { log } from "./log.js";
 
 const FileSrc = z.object({
@@ -229,6 +232,31 @@ const TlsConfig = z.object({
 });
 export type TlsConfigType = z.infer<typeof TlsConfig>;
 
+/**
+ * Optional decision-model selector. When set, a `select_guidance` tool
+ * is registered that asks TypeSafe's Jev which items in the listed
+ * collections apply to the agent's task. `pick_one` asks one Choice
+ * (highest-probability item, or none); `pick_all` asks one yes/no per
+ * item and keeps every item at or above `threshold`.
+ */
+const SelectorCollection = z.object({
+  name: z.string().min(1),
+  mode: z.enum(["pick_one", "pick_all"]),
+  min_confidence: z.number().min(0).max(1).default(0.6),
+  threshold: z.number().min(0).max(1).default(0.5),
+  top_k: z.number().int().positive().max(20).default(3),
+});
+
+const SelectorConfig = z.object({
+  provider: z.literal("typesafe").default("typesafe"),
+  api_key: z.string().default("${TYPESAFE_API_KEY}"),
+  base_url: z.string().url().default("https://api.typesafe.ai"),
+  model: z.string().min(1).default("jev-latest"),
+  timeout_ms: z.number().int().positive().default(5_000),
+  include_content: z.boolean().default(false),
+  collections: z.array(SelectorCollection).min(1),
+});
+
 export const ConfigSchema = z.object({
   server: ServerInfo.default({}),
   collections: z.array(Collection).default([]),
@@ -269,6 +297,7 @@ export const ConfigSchema = z.object({
         .optional(),
     })
     .optional(),
+  selector: SelectorConfig.optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -308,6 +337,8 @@ export interface LoadedConfig {
     rules: Record<string, string[]>;
     collections?: { default_allow: boolean; rules: Record<string, string[]> };
   };
+  /** Set only when `selector` is configured; registers `select_guidance`. */
+  selector?: GuidanceSelector;
 }
 
 /**
@@ -379,8 +410,8 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     if (dupNames.has(c.name)) {
       throw new Error(`duplicate collection name: ${c.name}`);
     }
-    if (c.name === "tool_registry") {
-      throw new Error(`collection name 'tool_registry' is reserved`);
+    if (c.name === "tool_registry" || c.name === "select_guidance") {
+      throw new Error(`collection name '${c.name}' is reserved`);
     }
     dupNames.add(c.name);
   }
@@ -425,9 +456,37 @@ export async function loadConfig(path: string): Promise<LoadedConfig> {
     dedupTools.push(t);
   }
 
+  const collections = cfg.collections.map(buildCollection);
+
+  let selector: GuidanceSelector | undefined;
+  if (cfg.selector) {
+    const byName = new Map(collections.map((c) => [c.name, c]));
+    const seenSel = new Set<string>();
+    const settings = cfg.selector.collections.map((sc) => {
+      const collection = byName.get(sc.name);
+      if (!collection) throw new Error(`selector references unknown collection: ${sc.name}`);
+      if (seenSel.has(sc.name)) throw new Error(`selector lists collection twice: ${sc.name}`);
+      seenSel.add(sc.name);
+      return { collection, mode: sc.mode, minConfidence: sc.min_confidence, threshold: sc.threshold, topK: sc.top_k };
+    });
+    const apiKey = interpolateEnv(cfg.selector.api_key);
+    selector = new GuidanceSelector({
+      client: new TypeSafeClient({
+        apiKey,
+        baseUrl: cfg.selector.base_url,
+        model: cfg.selector.model,
+        timeoutMs: cfg.selector.timeout_ms,
+      }),
+      collections: settings,
+      includeContent: cfg.selector.include_content,
+      info: { model: cfg.selector.model, apiKeyConfigured: apiKey.length > 0 },
+    });
+  }
+
   return {
     server: cfg.server,
-    collections: cfg.collections.map(buildCollection),
+    collections,
+    selector,
     tools: {
       description: cfg.tools.description,
       usage: cfg.tools.usage,

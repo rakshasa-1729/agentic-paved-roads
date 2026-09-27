@@ -52,6 +52,13 @@ export const authAttempts = new Counter({
   ...labels(["mode", "ok"]),
 });
 
+export const selectorRequests = new Counter({
+  name: "security_mcp_selector_requests_total",
+  help: "select_guidance calls, partitioned by outcome: ok (all collections answered), partial, or error (every collection fell back).",
+  registers: [registry],
+  ...labels(["outcome"]),
+});
+
 /** Render the registry in the Prometheus text exposition format. */
 export async function renderMetrics(): Promise<string> {
   return registry.metrics();

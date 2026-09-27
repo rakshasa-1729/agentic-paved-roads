@@ -6,6 +6,13 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { LoadedCollection, LoadedConfig } from "./config.js";
 import { handleContent, contentJsonSchema, ContentInputSchema } from "./tools/content.js";
 import { handleToolRegistry, toolRegistryJsonSchema, ToolRegistryInputSchema } from "./tools/tool_registry.js";
+import {
+  SELECT_GUIDANCE_TOOL,
+  SelectGuidanceInputSchema,
+  handleSelectGuidance,
+  selectGuidanceDescription,
+  selectGuidanceJsonSchema,
+} from "./tools/select_guidance.js";
 import { currentPrincipal, log, withRequestId, currentRequestId } from "./log.js";
 import { buildAuthMiddleware } from "./auth/index.js";
 import { type AuditRecorder, noopAudit } from "./audit.js";
@@ -55,14 +62,16 @@ export function isToolAllowed(
  * its `default_allow`) to access a collection. When `rbac.collections` is
  * not configured, all collections are allowed (backward compat).
  *
- * Always returns `true` for `tool_registry` — tool-level RBAC covers it.
+ * Always returns `true` for `tool_registry` and `select_guidance` —
+ * tool-level RBAC covers them, and `select_guidance` filters its own
+ * collections per principal.
  */
 export function isCollectionAllowed(
   rbac: { collections?: { default_allow: boolean; rules: Record<string, string[]> } } | undefined,
   principal: string | undefined,
   collection: string,
 ): boolean {
-  if (collection === "tool_registry") return true;
+  if (collection === "tool_registry" || collection === SELECT_GUIDANCE_TOOL) return true;
   const col = rbac?.collections;
   if (!col) return true;
   const rules = col.rules[principal ?? ""];
@@ -97,6 +106,9 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
         "List, describe, and invoke tools registered with this server (e.g., conftest, exception_tool).",
       inputSchema: toolRegistryJsonSchema,
     },
+    ...(cfg.selector
+      ? [{ name: SELECT_GUIDANCE_TOOL, description: selectGuidanceDescription(cfg.selector), inputSchema: selectGuidanceJsonSchema }]
+      : []),
   ];
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
@@ -147,6 +159,11 @@ export function buildServer(cfg: LoadedConfig, audit: AuditRecorder = noopAudit(
         let result: unknown;
         if (name === "tool_registry") {
           result = await handleToolRegistry(cfg.tools, ToolRegistryInputSchema.parse(args ?? {}));
+        } else if (name === SELECT_GUIDANCE_TOOL && cfg.selector) {
+          const principal = currentPrincipal();
+          result = await handleSelectGuidance(cfg.selector, SelectGuidanceInputSchema.parse(args ?? {}), (c) =>
+            isCollectionAllowed(cfg.rbac, principal, c),
+          );
         } else {
           const collection = collectionByName.get(name);
           if (!collection) throw new Error(`unknown tool: ${name}`);

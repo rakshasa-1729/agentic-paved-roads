@@ -167,6 +167,25 @@ tools:
 #   request_cert: true                    # request client cert (default true)
 #   reject_unauthorized: true             # reject unauthorized peers (default true)
 
+# ─── Guidance selector (optional) ──────────────────────────────────
+# Registers a `select_guidance` tool that asks TypeSafe's Jev decision
+# model which items apply to the agent's task. The task text and item
+# summaries are sent to api.typesafe.ai — leave this unset if that
+# isn't acceptable. Fails open to action=list if the API is unavailable.
+# selector:
+#   api_key: "${TYPESAFE_API_KEY}"   # default
+#   model: jev-latest
+#   timeout_ms: 5000
+#   include_content: false
+#   collections:
+#     - name: paved_road_tool
+#       mode: pick_one               # highest-probability item, or none
+#       min_confidence: 0.6          # below this, return ranked candidates
+#       top_k: 3
+#     - name: policy_tool
+#       mode: pick_all               # every item with probability >= threshold
+#       threshold: 0.5
+
 # ─── Metrics endpoint protection ───────────────────────────────────
 # metrics_protect: true              # /metrics requires auth when mode≠none
 

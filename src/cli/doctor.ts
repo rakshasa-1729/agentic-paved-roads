@@ -145,11 +145,12 @@ function checkEnv(): Check[] {
     "LOG_LEVEL",
     "SECURITY_REPO_TOKEN",
     "GITHUB_TOKEN",
+    "TYPESAFE_API_KEY",
   ];
   return interesting.map<Check>((name) => {
     const v = process.env[name];
     if (!v) return { name, status: "info", detail: "(unset)" };
-    const masked = name.endsWith("_TOKEN") ? `set (${v.length} chars)` : v;
+    const masked = name.endsWith("_TOKEN") || name.endsWith("_KEY") ? `set (${v.length} chars)` : v;
     return { name, status: "ok", detail: masked };
   });
 }
@@ -220,6 +221,21 @@ async function probeSources(): Promise<Check[]> {
         });
       }
     }
+  }
+
+  if (cfg.selector) {
+    const info = cfg.selector.info;
+    const detail = `${cfg.selector.collectionNames.join(", ")} via ${info?.model ?? "typesafe"}`;
+    checks.push(
+      info?.apiKeyConfigured === false
+        ? {
+            name: "selector",
+            status: "warn",
+            detail: `${detail}; api_key is empty`,
+            hint: "Set TYPESAFE_API_KEY (or selector.api_key). select_guidance will fall back to action=list until then.",
+          }
+        : { name: "selector", status: "ok", detail: `${detail}; api_key set (not probed)` },
+    );
   }
 
   // Probe tool MCP sources
