@@ -28,6 +28,10 @@
 
 set -euo pipefail
 
+# GUI MCP hosts (Cursor, Claude Desktop) spawn with a login-less PATH that
+# omits Homebrew. Prepend the usual locations so `gh` and `docker` resolve.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+
 if ! command -v gh >/dev/null 2>&1; then
   echo "security-mcp: 'gh' CLI not found. Install with: brew install gh" >&2
   exit 1
