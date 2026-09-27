@@ -52,6 +52,18 @@ This section covers in-progress work on `main` that has not been tagged yet.
   `dedup` / `section` / `max_bytes` / `verbose`.
 - `usage_on` documented in "Agent prompt" and in the "Configuring sources" example.
 
+## [0.3.0](https://github.com/rakshasa-1729/agentic-paved-roads/compare/v0.2.0...v0.3.0) (2026-09-27)
+
+
+### Features
+
+* optional Jev-backed select_guidance tool ([3d7e1f5](https://github.com/rakshasa-1729/agentic-paved-roads/commit/3d7e1f55dd81ca3c42359a9475b791035eba4cb5))
+
+
+### Bug Fixes
+
+* **launcher:** prepend Homebrew paths so GUI MCP hosts find gh and docker ([6378cfd](https://github.com/rakshasa-1729/agentic-paved-roads/commit/6378cfd0e0e44b484a83164fdaa9a53e3d74c87e))
+
 ## [0.2.0](https://github.com/rakshasa-1729/agentic-paved-roads/compare/v0.1.0...v0.2.0) (2026-06-28)
 
 
