@@ -12,14 +12,14 @@
 #       -e MCP_TRANSPORT=http \
 #       security-mcp:latest
 
-FROM node:20-slim AS deps
+FROM node:25-slim AS deps
 WORKDIR /build
 COPY package.json package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --omit=dev
 
 
-FROM node:20-slim AS build
+FROM node:25-slim AS build
 WORKDIR /build
 COPY package.json package-lock.json* tsconfig.json ./
 RUN --mount=type=cache,target=/root/.npm \
@@ -28,7 +28,7 @@ COPY src ./src
 RUN npx tsc
 
 
-FROM node:20-slim AS runtime
+FROM node:25-slim AS runtime
 
 ENV NODE_ENV=production \
     SECURITY_MCP_CONFIG=/etc/security-mcp/config.yaml
