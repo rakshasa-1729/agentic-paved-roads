@@ -336,12 +336,6 @@ agent hold the whole registry in a few hundred tokens.
 directive. Use `tools.usage_on: never` to suppress (e.g. when the
 directive is already in the tool description).
 
-`tool_registry(list)` returns a compact shape by default (`name`,
-`source`, `description` only) — pass `verbose: true` to pull
-`input_schema` + `metadata`, or call `describe` for the one tool the
-agent is about to invoke. Keeping the default `list` cheap lets the
-agent hold the whole registry in a few hundred tokens.
-
 ## Guidance selector (optional)
 
 Instead of making the agent read every `list` and guess what's
@@ -450,6 +444,7 @@ src/
   log.ts                # JSON-line logger + per-call request_id + principal (ALS)
   audit.ts              # redacted JSONL audit recorder (args sha256-hashed)
   metrics.ts            # Prometheus registry (http-requests, tool-*, audit-writes)
+  rate-limit.ts         # in-memory sliding-window limiter for POST /mcp
   tracing.ts            # OpenTelemetry API span wrapper (BYO exporter)
   cli/
     serve.ts            # `serve` subcommand (default)

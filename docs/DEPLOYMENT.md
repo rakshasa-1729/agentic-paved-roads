@@ -304,7 +304,7 @@ rbac:
 
 Authorization is checked after authentication on every `tools/call`.
 Denied calls return MCP `isError: true` with a "not authorized" message,
-increment `tool_invocations_total{ok="false"}`, and emit an
+increment `security_mcp_tool_invocations_total{ok="false"}`, and emit an
 `authz.denied` log line. When RBAC is not configured, all authenticated
 principals may call all tools.
 
@@ -403,13 +403,16 @@ curl -sN -X POST localhost:8080/mcp \
   for active sessions. Lambda pricing is similar; the bigger
   consideration is that Lambda reconnects every 15 min for long-lived
   streaming responses.
-- **Metrics**: `GET /metrics` returns Prometheus text-format. Counters
-  on `tool_invocations_total{tool, ok}`, `http_requests_total{status_class}`,
-  `audit_writes_total{ok}`, `auth_attempts_total{mode, ok}`; histogram on
-  `tool_duration_ms{tool, ok}`; default Node metrics (CPU, RSS, GC,
-  event-loop lag) under the `security_mcp_` prefix. Scrape from your
-  monitoring stack — no additional config needed. When auth is enabled
-  (mode ≠ none), `/metrics` itself requires the same authentication;
+- **Metrics**: `GET /metrics` returns Prometheus text-format. Custom series
+  and the default Node metrics (CPU, RSS, GC, event-loop lag) all use the
+  `security_mcp_` prefix. Counters: `security_mcp_tool_invocations_total{tool, ok}`,
+  `security_mcp_http_requests_total{status_class}`,
+  `security_mcp_audit_writes_total{ok}`,
+  `security_mcp_auth_attempts_total{mode, ok}`,
+  `security_mcp_selector_requests_total{outcome}`.
+  Histogram: `security_mcp_tool_duration_ms{tool, ok}`.
+  Scrape from your monitoring stack — no additional config needed. When auth
+  is enabled (mode ≠ none), `/metrics` itself requires the same authentication;
   set `metrics_protect: false` to expose it without auth.
 - **Tracing**: spans named `mcp.tool.call` with `mcp.tool`,
   `mcp.action`, `mcp.principal`, `mcp.auth_mode`, and
