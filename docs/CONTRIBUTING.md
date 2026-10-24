@@ -30,8 +30,8 @@ under vitest with the project's TypeScript config.
 
 - Branch from `main`. Squash-merge.
 - CI must pass: typecheck, build, tests on Node 20 and 22.
-- Keep changes focused — one concern per PR. If a change spans multiple
-  buckets in [the roadmap](../README.md), split it.
+- Keep changes focused — one concern per PR. Split a change that spans
+  unrelated areas.
 - New features need tests. Bug fixes need a regression test.
 - Update `docs/` if the change is user-visible (config schema, CLI
   flags, transport behavior, deploy recipe).

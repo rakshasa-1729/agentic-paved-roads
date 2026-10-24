@@ -10,47 +10,25 @@ so the changelog is generated automatically.
 
 ## Unreleased
 
-This section covers in-progress work on `main` that has not been tagged yet.
+Changes on `main` since the latest tag. release-please inserts the next version
+heading and does not clear this section, so replace it when that release merges.
 
 ### Added
 
-- **Context-frugal API knobs** — `list` gains `limit` / `fields` / `dedup` params to
-  cap response size and avoid re-sending identical metadata; `get` gains `section`
-  (extract a single markdown section by heading) and `max_bytes` (truncate with a
-  flag so the agent knows it's truncated). `tool_registry list` returns a compact
-  shape by default (drops `input_schema` / `metadata`) with `verbose: true` to opt
-  back in.
-- **`usage_on: every | never`** — per-collection opt-out for the `usage` directive.
-  Set `usage_on: never` when the host's context budget is tight and the directive is
-  already in the tool description.
-- **Test coverage** — direct unit tests for `util/timeout` (8), `policies-cache` (7),
-  `loadConfig` (14), `McpToolSource` / `McpResourceSource` happy paths (9), and a
-  conftest-version sync guard (3).
-- **`.conftest-version`** — single source of truth for the conftest pin, read by both
-  Dockerfiles and referenced in all YAML configs. A CI test fails if any pin drifts.
-- **Pretest build hook** — `npm test` now runs `tsc` first (via `pretest`) so e2e tests
-  that spawn `dist/index.js` don't depend on a stale build.
-- **CI hardening** — `npm audit` (high+ on production deps), GitHub CodeQL, Dependabot
-  (npm + actions + docker), CODEOWNERS, PR / issue templates.
-- **Release automation** — `release-please` workflow with `npm publish --provenance`
-  on tag.
+- **`select_guidance`** — optional `selector` block registers a tool that asks
+  TypeSafe's Jev which collection items apply to a task. `pick_one` returns the
+  highest-probability item, or none when confidence is below `min_confidence`;
+  `pick_all` keeps every item at or above `threshold`. Fails open to `action=list`,
+  respects RBAC, and counts outcomes in
+  `security_mcp_selector_requests_total{outcome=ok|partial|error}`.
+  `security-mcp doctor --probe` reports whether the API key resolved, without
+  calling the API.
 
-### Changed
+### Fixed
 
-- `handleContent` (`get` action) no longer swallows post-fetch errors (like "section
-  not found") as "not found in any configured source" — source-fetch errors fall through
-  to the next source, but processing errors on the fetched content propagate correctly.
-- Cross-source `dedup` in `list` now records the set of source ids in a `sources` field
-  on the surviving item, so the agent can resolve the same doc from a specific source
-  without re-listing.
-
-### Documentation
-
-- README "Layout" section rewritten to list all CLI subcommands, all source types,
-  `auth/`, `audit.ts`, `metrics.ts`, `tracing.ts`, and the `registry_files` feature.
-- New "Context budget" subsection under "Tool inputs" documenting `limit` / `fields` /
-  `dedup` / `section` / `max_bytes` / `verbose`.
-- `usage_on` documented in "Agent prompt" and in the "Configuring sources" example.
+- **`bin/security-mcp`** — prepends `/opt/homebrew/bin` and `/usr/local/bin` to
+  `PATH` so GUI MCP hosts, which spawn without a login-shell PATH, can find
+  `gh` and `docker`.
 
 ## [0.2.0](https://github.com/rakshasa-1729/agentic-paved-roads/compare/v0.1.0...v0.2.0) (2026-06-28)
 
